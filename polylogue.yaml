@@ -1,0 +1,151 @@
+name: polylogue
+version: "1.0.0"
+description: Multi-agent AI coding assistant orchestration via Redis
+
+# Redis connection settings
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  db: 0
+  password: null
+  prefix: "polylogue"
+
+# Message queue settings
+queue:
+  task_channel: "tasks"
+  result_channel: "results"
+  broadcast_mode: "fanout"  # fanout | round_robin | pipeline
+
+# Tool discovery - manually configured AI assistants
+tools:
+  opencode:
+    enabled: true
+    type: "cli"
+    command: "opencode"
+    args: ["--interactive"]
+    env: {}
+    workdir: "."
+    startup_delay: 2
+    health_check:
+      enabled: true
+      interval: 30
+      command: "echo"
+      timeout: 5
+    capabilities:
+      - "code_edit"
+      - "file_operations"
+      - "terminal"
+    slots: 1  # how many concurrent tasks
+    priority: 10
+
+  claude_code:
+    enabled: true
+    type: "cli"
+    command: "claude"
+    args: ["--print-only", "--no-stream"]
+    env: {}
+    workdir: "."
+    startup_delay: 3
+    health_check:
+      enabled: true
+      interval: 30
+      command: "echo"
+      timeout: 5
+    capabilities:
+      - "code_edit"
+      - "file_operations"
+      - "terminal"
+    slots: 1
+    priority: 10
+
+  gemini_code:
+    enabled: true
+    type: "cli"
+    command: "gemini"
+    args: ["--local", "--no-stream"]
+    env: {}
+    workdir: "."
+    startup_delay: 2
+    health_check:
+      enabled: true
+      interval: 30
+      command: "echo"
+      timeout: 5
+    capabilities:
+      - "code_edit"
+      - "file_operations"
+      - "terminal"
+    slots: 1
+    priority: 10
+
+  cursor:
+    enabled: false
+    type: "cursor_cli"  # special handler for Cursor
+    command: "cursor"
+    args: ["--ai-assist"]
+    env: {}
+    workdir: "."
+    startup_delay: 5
+    health_check:
+      enabled: true
+      interval: 30
+    capabilities:
+      - "code_edit"
+      - "file_operations"
+    slots: 1
+    priority: 10
+
+  vscode_assistant:
+    enabled: false
+    type: "vscode_extension"
+    command: "code"
+    args: ["--wait"]
+    env: {}
+    workdir: "."
+    startup_delay: 3
+    health_check:
+      enabled: true
+      interval: 30
+    capabilities:
+      - "code_completion"
+    slots: 2
+    priority: 5
+
+  copilot:
+    enabled: false
+    type: "copilot_cli"
+    command: "copilot-gateway"
+    args: []
+    env: {}
+    workdir: "."
+    startup_delay: 2
+    health_check:
+      enabled: true
+      interval: 30
+    capabilities:
+      - "code_completion"
+      - "code_suggestions"
+    slots: 4
+    priority: 5
+
+# Orchestration settings
+orchestration:
+  strategy: "pipeline"  # pipeline | parallel | hybrid
+  max_parallel_tasks: 3
+  task_timeout: 300
+  result_aggregation: "first"  # first | all | consensus
+  consensus:
+    enabled: false
+    threshold: 0.6  # 60% agreement required
+
+# Logging
+logging:
+  level: "INFO"
+  file: "polylogue.log"
+  console: true
+
+# Network bridge (optional, for TCP-based polybridge)
+bridge:
+  enabled: false
+  host: "127.0.0.1"
+  port: 7847
