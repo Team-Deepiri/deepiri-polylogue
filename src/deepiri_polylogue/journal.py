@@ -49,9 +49,10 @@ def tail_events(root: Path, *, lines: int = 50) -> list[dict[str, Any]]:
     path = journal_path(root)
     if not path.is_file():
         return []
+    n = max(1, min(int(lines), 50_000))
     buf: list[dict[str, Any]] = []
     for ev in iter_events(path):
         buf.append(ev)
-        if len(buf) > lines:
+        if len(buf) > n:
             buf.pop(0)
     return buf
