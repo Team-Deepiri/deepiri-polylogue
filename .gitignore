@@ -12,3 +12,7 @@ venv/
 .env
 *.swp
 .DS_Store
+
+# native polybridge (build with `make -C native/polybridge`)
+native/polybridge/polybridge
+native/polybridge/polyclient
