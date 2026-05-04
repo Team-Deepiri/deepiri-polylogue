@@ -65,7 +65,7 @@ Default root: `<cwd>/.deepiri/polylogue/` (override with `DEEPIRI_POLYLOGUE_ROOT
 ## Threats and mitigations
 
 - **Secret leakage in utterances**: convention + README warning; optional redact hook later.
-- **Concurrent writers**: POSIX `fcntl` advisory locks on journal append; readers never lock for long.
+- **Concurrent writers**: POSIX `fcntl` advisory locks on journal append; readers never lock for long. On platforms without `fcntl` (typical native Windows Python), appends are best-effort without an OS lock—still fine for human-paced multi-window use.
 - **Journal growth**: rotation policy deferred; `tail` filters by default.
 
 ## Relation to “Deepiri vibe”

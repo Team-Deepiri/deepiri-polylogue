@@ -6,12 +6,12 @@
 
 ```bash
 cd deepiri-polylogue
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]" 2>/dev/null || pip install -e .
-pip install pytest  # if optional dev extra not used
+python3 -m venv .venv && source .venv/bin/activate
+python3 -m pip install -e ".[dev]" 2>/dev/null || python3 -m pip install -e .
+python3 -m pip install pytest  # if optional dev extra not used
 ```
 
-The console script is **`polylogue`**.
+The console script is **`polylogue`**. Equivalent: `python3 -m deepiri_polylogue --help`.
 
 ## Quickstart
 
