@@ -12,10 +12,11 @@ from .pack import render_sync_pack
 from .participants import load_participants, touch_participant, upsert_participant
 from .paths import polylogue_root
 from .store import init_session, load_meta
+from . import workspace as ws
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="polylogue", description="Deepiri Polylogue — multi-LLM filesystem journal")
+    p = argparse.ArgumentParser(prog="polylogue", description="Deepiri Polylogue — multi-LLM journal + workspace sync")
     p.add_argument("--root", type=Path, help="Override polylogue root directory")
     p.add_argument("--cwd", type=Path, default=None, help="Working directory for default root resolution")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -48,11 +49,85 @@ def main(argv: list[str] | None = None) -> int:
 
     s_status = sub.add_parser("status", help="Show meta + roster + journal path")
 
-    s_pack = sub.add_parser("sync-pack", help="Render Markdown awareness pack for pasting")
+    s_pack = sub.add_parser("sync-pack", help="Render Markdown pack (journal + context + presence + scratch)")
     s_pack.add_argument("--lines", type=int, default=40)
+    s_pack.add_argument("--context-bytes", type=int, default=24_000, dest="context_bytes")
+    s_pack.add_argument("--memory-bytes", type=int, default=12_000, dest="memory_bytes")
 
     s_sys = sub.add_parser("system", help="Append a system/meta journal line")
     s_sys.add_argument("--text", required=True)
+
+    # --- workspace: presence ---
+    s_pr = sub.add_parser("presence", help="Who is editing / reading what (incl. subagents)")
+    pr_sub = s_pr.add_subparsers(dest="presence_cmd", required=True)
+
+    pr_list = pr_sub.add_parser("list", help="Print presence.json")
+    pr_list.add_argument("--json", action="store_true", help="Pretty JSON to stdout")
+
+    pr_set = pr_sub.add_parser("set", help="Upsert a participant or subagent row")
+    pr_set.add_argument("--id", required=True, help="Actor id (surface or subagent)")
+    pr_set.add_argument("--kind", choices=["participant", "subagent"], default="participant")
+    pr_set.add_argument("--parent", dest="parent_id", default=None, help="Required when kind=subagent")
+    pr_set.add_argument("--label", default=None, help="Display label")
+    pr_set.add_argument("--state", choices=["idle", "reading", "editing"], default="editing")
+    pr_set.add_argument("--cwd", default=None, help="Workspace cwd for this actor")
+    pr_set.add_argument(
+        "--path",
+        action="append",
+        default=None,
+        metavar="REL_PATH:ROLE",
+        help="Repeatable; ROLE is edit or read. If omitted, keep existing paths.",
+    )
+    pr_set.add_argument("--note", default=None, help="Free line (omit to keep previous)")
+    pr_set.add_argument("--no-journal", action="store_true", help="Do not append journal presence event")
+
+    pr_clear = pr_sub.add_parser("clear", help="Remove one actor row by id")
+    pr_clear.add_argument("--id", required=True)
+
+    # --- workspace: subagent (convenience) ---
+    s_sa = sub.add_parser("subagent", help="Track subagents under a parent surface")
+    sa_sub = s_sa.add_subparsers(dest="subagent_cmd", required=True)
+
+    sa_list = sa_sub.add_parser("list", help="List subagent rows")
+    sa_list.add_argument("--parent", default=None, help="Filter by parent participant id")
+
+    sa_add = sa_sub.add_parser("add", help="Register a subagent working on paths")
+    sa_add.add_argument("--parent", required=True)
+    sa_add.add_argument("--id", required=True, dest="sub_id")
+    sa_add.add_argument("--label", required=True)
+    sa_add.add_argument("--state", choices=["idle", "reading", "editing"], default="reading")
+    sa_add.add_argument("--cwd", default=None)
+    sa_add.add_argument("--path", action="append", default=None, metavar="REL:ROLE")
+    sa_add.add_argument("--note", default=None)
+    sa_add.add_argument("--no-journal", action="store_true")
+
+    sa_rm = sa_sub.add_parser("remove", help="Remove one subagent by parent + id")
+    sa_rm.add_argument("--parent", required=True)
+    sa_rm.add_argument("--id", required=True, dest="sub_id")
+
+    # --- shared context / memory files ---
+    s_ctx = sub.add_parser("context", help="Canonical shared markdown context")
+    ctx_sub = s_ctx.add_subparsers(dest="ctx_cmd", required=True)
+    c_show = ctx_sub.add_parser("show", help="Print context.md (tail)")
+    c_show.add_argument("--max-bytes", type=int, default=100_000)
+    c_set = ctx_sub.add_parser("set", help="Replace context.md from a file (atomic)")
+    c_set.add_argument("--file", type=Path, required=True)
+    c_app = ctx_sub.add_parser("append", help="Append text to context.md (atomic)")
+    c_app.add_argument("--text", required=True)
+
+    s_mem = sub.add_parser("memory", help="Durable decisions / long memory markdown")
+    mem_sub = s_mem.add_subparsers(dest="mem_cmd", required=True)
+    m_show = mem_sub.add_parser("show", help="Print memory.md (tail)")
+    m_show.add_argument("--max-bytes", type=int, default=100_000)
+    m_app = mem_sub.add_parser("append", help="Append text to memory.md (atomic)")
+    m_app.add_argument("--text", required=True)
+
+    s_sd = sub.add_parser("scratch-dir", help="Print per-participant scratch directory path")
+    s_sd.add_argument("--id", required=True, dest="participant_id")
+
+    s_sw = sub.add_parser("scratch-write", help="Write stdin bytes to scratch/<id>/NAME (atomic)")
+    s_sw.add_argument("--id", required=True, dest="participant_id")
+    s_sw.add_argument("--name", required=True, help="Relative path under scratch, e.g. notes/x.md")
 
     args = p.parse_args(argv)
     root = args.root if args.root else polylogue_root(args.cwd)
@@ -63,7 +138,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Initialized polylogue at {root}", file=sys.stderr)
             return 0
 
-        load_meta(root)  # ensure exists
+        load_meta(root)
+        ws.workspace_init(root)
 
         if args.cmd == "join":
             upsert_participant(
@@ -125,20 +201,187 @@ def main(argv: list[str] | None = None) -> int:
             meta = load_meta(root)
             people = load_participants(root)
             jp = journal_path(root)
-            print(json.dumps({"root": str(root), "meta": meta, "participants": [x.to_json() for x in people], "journal": str(jp)}, indent=2))
+            out = {
+                "root": str(root),
+                "meta": meta,
+                "participants": [x.to_json() for x in people],
+                "journal": str(jp),
+                "context": str(ws.context_path(root)),
+                "memory": str(ws.memory_path(root)),
+                "presence": str(ws.presence_path(root)),
+                "scratch": str(ws.scratch_root(root)),
+            }
+            print(json.dumps(out, indent=2))
             return 0
 
         if args.cmd == "sync-pack":
-            sys.stdout.write(render_sync_pack(root, lines=args.lines))
+            sys.stdout.write(
+                render_sync_pack(
+                    root,
+                    lines=args.lines,
+                    context_max_bytes=args.context_bytes,
+                    memory_max_bytes=args.memory_bytes,
+                )
+            )
+            return 0
+
+        if args.cmd == "presence":
+            return _cmd_presence(root, args)
+
+        if args.cmd == "subagent":
+            return _cmd_subagent(root, args)
+
+        if args.cmd == "context":
+            return _cmd_context(root, args)
+
+        if args.cmd == "memory":
+            return _cmd_memory(root, args)
+
+        if args.cmd == "scratch-dir":
+            d = ws.scratch_dir_for(root, args.participant_id)
+            d.mkdir(parents=True, exist_ok=True)
+            print(d.resolve())
+            return 0
+
+        if args.cmd == "scratch-write":
+            ws.validate_scratch_rel(args.name)
+            dest = ws.scratch_write_stdin(root, args.participant_id, args.name)
+            print(str(dest.resolve()), file=sys.stderr)
             return 0
 
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 2
+    except (ValueError, OSError) as e:
+        print(str(e), file=sys.stderr)
+        return 1
     except Exception as e:  # pragma: no cover
         print(f"error: {e}", file=sys.stderr)
         return 1
 
+    return 1
+
+
+def _paths_arg(path_list: list[str] | None) -> list[tuple[str, str]] | None:
+    if path_list is None:
+        return None
+    return [ws.parse_path_role(x) for x in path_list]
+
+
+def _journal_presence(root: Path, actor_id: str, row: dict) -> None:
+    touch_participant(root, actor_id)
+    snap = {
+        "kind": row.get("kind"),
+        "state": row.get("state"),
+        "paths": row.get("paths"),
+        "cwd": row.get("cwd"),
+        "note": (row.get("note") or "")[:200],
+    }
+    append_event(
+        root,
+        event_line(type="presence", participant_id=actor_id, summary=json.dumps(snap, ensure_ascii=False)),
+    )
+
+
+def _cmd_presence(root: Path, args: argparse.Namespace) -> int:
+    if args.presence_cmd == "list":
+        doc = ws.load_presence(root)
+        if args.json:
+            print(json.dumps(doc, indent=2, ensure_ascii=False))
+        else:
+            for a in doc.get("actors", []):
+                print(json.dumps(a, ensure_ascii=False))
+        return 0
+    if args.presence_cmd == "clear":
+        if not ws.clear_actor(root, args.id):
+            print(f"no actor {args.id!r}", file=sys.stderr)
+            return 1
+        return 0
+    if args.presence_cmd == "set":
+        if args.kind == "subagent" and not args.parent_id:
+            print("--parent required for kind=subagent", file=sys.stderr)
+            return 1
+        if args.kind == "participant":
+            args.parent_id = None
+        row = ws.upsert_actor(
+            root,
+            actor_id=args.id,
+            kind=args.kind,
+            parent_id=args.parent_id,
+            label=args.label,
+            state=args.state,
+            cwd=args.cwd,
+            paths=_paths_arg(args.path),
+            note=args.note,
+        )
+        if not args.no_journal:
+            _journal_presence(root, args.id, row)
+        print(json.dumps(row, indent=2, ensure_ascii=False))
+        return 0
+    return 1
+
+
+def _cmd_subagent(root: Path, args: argparse.Namespace) -> int:
+    if args.subagent_cmd == "list":
+        doc = ws.load_presence(root)
+        for a in doc.get("actors", []):
+            if a.get("kind") != "subagent":
+                continue
+            if args.parent and a.get("parent_id") != args.parent:
+                continue
+            print(json.dumps(a, ensure_ascii=False))
+        return 0
+    if args.subagent_cmd == "add":
+        row = ws.upsert_actor(
+            root,
+            actor_id=args.sub_id,
+            kind="subagent",
+            parent_id=args.parent,
+            label=args.label,
+            state=args.state,
+            cwd=args.cwd,
+            paths=_paths_arg(args.path),
+            note=args.note,
+        )
+        if not args.no_journal:
+            _journal_presence(root, args.sub_id, row)
+        print(json.dumps(row, indent=2, ensure_ascii=False))
+        return 0
+    if args.subagent_cmd == "remove":
+        if not ws.clear_subagent(root, args.parent, args.sub_id):
+            print("subagent not found", file=sys.stderr)
+            return 1
+        return 0
+    return 1
+
+
+def _cmd_context(root: Path, args: argparse.Namespace) -> int:
+    cp = ws.context_path(root)
+    if args.ctx_cmd == "show":
+        sys.stdout.write(ws.read_text_tail(cp, max_bytes=args.max_bytes) + "\n")
+        return 0
+    if args.ctx_cmd == "set":
+        data = args.file.expanduser().read_bytes()
+        ws.atomic_write_bytes(cp, data)
+        return 0
+    if args.ctx_cmd == "append":
+        prev = cp.read_bytes().decode("utf-8", errors="replace") if cp.is_file() else ""
+        block = prev.rstrip() + "\n\n" + args.text.strip() + "\n"
+        ws.atomic_write_text(cp, block)
+        return 0
+    return 1
+
+
+def _cmd_memory(root: Path, args: argparse.Namespace) -> int:
+    mp = ws.memory_path(root)
+    if args.mem_cmd == "show":
+        sys.stdout.write(ws.read_text_tail(mp, max_bytes=args.max_bytes) + "\n")
+        return 0
+    if args.mem_cmd == "append":
+        prev = mp.read_bytes().decode("utf-8", errors="replace") if mp.is_file() else ""
+        block = prev.rstrip() + "\n\n" + args.text.strip() + "\n"
+        ws.atomic_write_text(mp, block)
+        return 0
     return 1
 
 

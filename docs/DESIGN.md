@@ -60,7 +60,13 @@ Default root: `<cwd>/.deepiri/polylogue/` (override with `DEEPIRI_POLYLOGUE_ROOT
   meta.json           # session name, created_at
   participants.json   # roster
   journal.jsonl       # append-only log
+  presence.json       # actors: participants + subagents, cwd, paths, edit/read state
+  shared/context.md   # canonical shared context (sync-pack embeds a tail)
+  shared/memory.md     # durable decisions / long memory
+  scratch/<id>/        # per-surface temp files (optional; atomic writes)
 ```
+
+**Presence** is the “who is where” plane: each row is an *actor* (`participant` or `subagent` with `parent_id`). Paths carry `edit` vs `read` so models can avoid stomping the same file. **Subagents** are first-class rows so parent windows and delegated explore agents stay visible in one `sync-pack`.
 
 ## Threats and mitigations
 

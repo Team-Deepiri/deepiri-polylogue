@@ -15,3 +15,10 @@ def test_cli_happy_path(tmp_path, monkeypatch) -> None:
     assert main(["status"]) == 0
     out = main(["sync-pack", "--lines", "5"])
     assert out == 0
+    assert main(["presence", "set", "--id", "p1", "--state", "editing", "--path", "cli.py:edit", "--note", "here"]) == 0
+    assert main(["presence", "list", "--json"]) == 0
+    assert main(["context", "append", "--text", "## checkpoint"]) == 0
+    assert main(["memory", "append", "--text", "- decided X"]) == 0
+    assert main(["subagent", "add", "--parent", "p1", "--id", "subx", "--label", "Worker", "--path", "tests/:read"]) == 0
+    assert main(["scratch-dir", "--id", "p1"]) == 0
+    assert main(["subagent", "remove", "--parent", "p1", "--id", "subx"]) == 0

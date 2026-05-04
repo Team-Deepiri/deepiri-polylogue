@@ -31,11 +31,36 @@ polylogue status
 
 ## How cohesion works
 
-1. **Journal** — append-only `journal.jsonl` (utterances, handoffs, snapshots).
+1. **Journal** — append-only `journal.jsonl` (utterances, handoffs, snapshots, presence pings).
 2. **Roster** — `participants.json` lists who is in the room.
-3. **Sync pack** — `polylogue sync-pack` renders Markdown you paste so every model sees recent history + roster.
+3. **Shared files** (under `.deepiri/polylogue/`):
+   - `shared/context.md` — canonical context every surface should load (via `sync-pack` or direct read).
+   - `shared/memory.md` — durable decisions / long memory (append with `polylogue memory append`).
+   - `presence.json` — who is **editing or reading which paths**, including **subagents** tied to a parent id.
+   - `scratch/<participant-id>/` — temp notes per surface (`scratch-write` pipes stdin to a file there).
+4. **Sync pack** — `polylogue sync-pack` folds journal + roster + presence table + context/memory tails + scratch listing into one paste block.
 
-See [docs/DESIGN.md](docs/DESIGN.md) and [examples/cohesion-recipe.md](examples/cohesion-recipe.md).
+### Workspace commands (full sync)
+
+```bash
+# Register that this surface is editing specific paths (repeat --path)
+polylogue presence set --id cursor-gpt --state editing --cwd "$PWD" \
+  --path src/cli.py:edit --path docs/DESIGN.md:read --note "refactor CLI"
+
+# Subagent spawned by that surface, reading a subtree
+polylogue subagent add --parent cursor-gpt --id explore-1 --label "Explore agent" \
+  --path diri-lang/compiler:read --note "mapping tokens"
+
+# Shared canonical context (large blobs go here instead of chat)
+polylogue context append --text $'## Current goal\nShip workspace sync.\n'
+
+# Ephemeral handoff file (stdin → atomic file under scratch/)
+echo "WIP notes" | polylogue scratch-write --id cursor-gpt --name handoff/notes.md
+
+polylogue sync-pack --context-bytes 32000
+```
+
+See [docs/DESIGN.md](docs/DESIGN.md), [docs/STREAMING_BRIDGE.md](docs/STREAMING_BRIDGE.md), and [examples/cohesion-recipe.md](examples/cohesion-recipe.md).
 
 ## Security
 

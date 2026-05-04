@@ -10,7 +10,7 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-EventType = Literal["utterance", "handoff", "snapshot", "system"]
+EventType = Literal["utterance", "handoff", "snapshot", "system", "presence"]
 
 
 def new_event_id() -> str:

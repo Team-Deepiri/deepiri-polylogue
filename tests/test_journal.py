@@ -6,7 +6,6 @@ from pathlib import Path
 from deepiri_polylogue.journal import append_event, tail_events
 from deepiri_polylogue.models import Participant, event_line
 from deepiri_polylogue.participants import upsert_participant
-from deepiri_polylogue.models import Participant
 from deepiri_polylogue.store import init_session
 from deepiri_polylogue.pack import render_sync_pack
 

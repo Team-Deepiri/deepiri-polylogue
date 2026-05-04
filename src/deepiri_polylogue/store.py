@@ -6,6 +6,7 @@ from typing import Any
 
 from .models import utc_now_iso
 from .paths import ensure_dir
+from . import workspace as workspace_mod
 
 
 def meta_path(root: Path) -> Path:
@@ -21,6 +22,7 @@ def init_session(root: Path, session: str) -> None:
         "kind": "deepiri-polylogue",
     }
     mp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    workspace_mod.workspace_init(root)
 
 
 def load_meta(root: Path) -> dict[str, Any]:
