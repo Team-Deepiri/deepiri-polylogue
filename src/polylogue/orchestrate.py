@@ -1,274 +1,593 @@
-"""Orchestration coordinator - coordinates tasks across multiple AI tools."""
-import asyncio
+"""PolyBridge orchestration engine - master/slave parallel execution with context isolation."""
+
+from __future__ import annotations
+
 import json
 import logging
 import queue
 import threading
 import time
 import uuid
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from collections import defaultdict
 from typing import Any, Callable
 
-from polylogue.hub import Message, MessageType, RedisHub
-from polylogue.tools import ProcessAdapter, ToolManager, ToolState
-
+from polylogue.hub import Message, MessageType, RedisHub, ContextIsolator
+from polylogue.models import (
+    AgentCapability,
+    AgentNode,
+    AgentRole,
+    AgentState,
+    MessageType as MT,
+    Strategy,
+    Task,
+    TaskState,
+    Topology,
+    utcnow,
+)
+from polylogue.tools import ProcessAdapter, ToolManager, ToolRecord
 
 logger = logging.getLogger(__name__)
 
 
-class Strategy(Enum):
-    PIPELINE = "pipeline"
-    PARALLEL = "parallel"
-    HYBRID = "hybrid"
-
-
-class TaskState(Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-@dataclass
-class Task:
-    id: str
-    description: str
-    payload: dict
-    assigned_to: str | None = None
-    state: TaskState = TaskState.PENDING
-    result: Any = None
-    error: str | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    completed_at: datetime | None = None
-
-
 class TaskResult:
-    def __init__(self, task_id: str, tool: str, output: Any, error: str | None = None):
+    def __init__(self, task_id: str, agent: str, output: Any, error: str | None = None):
         self.task_id = task_id
-        self.tool = tool
+        self.agent = agent
         self.output = output
         self.error = error
-        self.timestamp = datetime.now(timezone.utc)
+        self.timestamp = utcnow().isoformat()
 
 
-class Orchestrator:
+class ContextManager:
+    """Manages context isolation between agents in the bridge."""
+
+    def __init__(self, isolator: ContextIsolator):
+        self._iso = isolator
+
+    def set_agent_context(self, agent_id: str, key: str, value: Any, shared: bool = False) -> None:
+        scope = "global" if shared else None
+        self._iso.set(agent_id, key, value, shared_scope=scope)
+
+    def get_agent_context(self, agent_id: str, key: str, shared: bool = False) -> Any | None:
+        scope = "global" if shared else None
+        return self._iso.get(agent_id, key, shared_scope=scope)
+
+    def push_event(self, agent_id: str, event: dict) -> None:
+        self._iso.push_event(agent_id, event)
+
+    def tail_events(self, agent_id: str, count: int = 50) -> list[dict]:
+        return self._iso.tail_events(agent_id, count)
+
+    def sync_to_agent(self, source: str, target: str, keys: list[str]) -> None:
+        for key in keys:
+            val = self._iso.get(source, key)
+            if val is not None:
+                self._iso.set(target, key, val)
+
+    def isolate_task(self, task: Task, agents: list[str]) -> dict[str, dict]:
+        snapshots = {}
+        for agent_id in agents:
+            snapshots[agent_id] = {
+                k: self._iso.get(agent_id, k) for k in self._iso.keys(agent_id)
+            }
+        task.context_snapshot = snapshots
+        return snapshots
+
+    def restore_context(self, task: Task, agent_id: str) -> None:
+        snapshot = task.context_snapshot
+        if not snapshot:
+            return
+        for key, val in snapshot.items():
+            if val is not None:
+                self._iso.set(agent_id, key, val)
+
+
+class PipelineExecutor:
+    """Sequential task execution - one agent at a time."""
+
+    def __init__(self, hub: RedisHub, tool_manager: ToolManager, ctx: ContextManager, timeout: float = 300.0):
+        self.hub = hub
+        self.tm = tool_manager
+        self.ctx = ctx
+        self.timeout = timeout
+
+    def execute(self, task: Task, agents: list[tuple[str, ProcessAdapter, ToolRecord]]) -> Task:
+        if not agents:
+            task.state = TaskState.FAILED
+            task.errors["_system"] = "No available agents"
+            return task
+        task.state = TaskState.DISPATCHED
+        task.started_at = utcnow().isoformat()
+        name, adapter, rec = agents[0]
+        task.assigned_to = [name]
+        self.tm.allocate(name)
+        try:
+            result = self._run_on_agent(task, name, adapter)
+            if result.error:
+                task.state = TaskState.FAILED
+                task.errors[name] = result.error
+            else:
+                task.state = TaskState.COMPLETED
+                task.results[name] = result.output
+        finally:
+            self.tm.release(name)
+        task.completed_at = utcnow().isoformat()
+        return task
+
+    def _run_on_agent(self, task: Task, name: str, adapter: ProcessAdapter) -> TaskResult:
+        msg = Message(
+            msg_type=MT.TASK,
+            sender="master",
+            payload={"task_id": task.id, "description": task.description, "payload": task.payload},
+            task_id=task.id,
+            target=name,
+        )
+        adapter.write_line(msg.to_json())
+        deadline = time.time() + self.timeout
+        collected: list[str] = []
+        def capture(line: str) -> None:
+            if task.id in line:
+                collected.append(line)
+        old_handler = adapter._output_handler
+        adapter.set_output_handler(capture)
+        try:
+            while time.time() < deadline:
+                if adapter.poll():
+                    break
+                if self.hub.is_completed(task.id):
+                    break
+                if task.state in (TaskState.CANCELLED, TaskState.FAILED):
+                    break
+                time.sleep(0.1)
+            for line in collected:
+                try:
+                    data = json.loads(line)
+                    if data.get("task_id") == task.id and data.get("type") == "result":
+                        return TaskResult(task.id, name, data.get("payload", {}).get("output"), data.get("payload", {}).get("error"))
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            raw = self.hub.get_results(task.id)
+            if name in raw:
+                return TaskResult(task.id, name, raw[name], None)
+        finally:
+            adapter.set_output_handler(old_handler)
+        return TaskResult(task.id, name, None, "Timeout or no result")
+
+
+class ParallelExecutor:
+    """True fan-out parallel execution - dispatch to multiple agents simultaneously."""
+
+    def __init__(self, hub: RedisHub, tool_manager: ToolManager, ctx: ContextManager, max_parallel: int = 5, timeout: float = 300.0):
+        self.hub = hub
+        self.tm = tool_manager
+        self.ctx = ctx
+        self.max_parallel = max_parallel
+        self.timeout = timeout
+        self._lock = threading.Lock()
+
+    def execute(self, task: Task, agents: list[tuple[str, ProcessAdapter, ToolRecord]]) -> Task:
+        if not agents:
+            task.state = TaskState.FAILED
+            task.errors["_system"] = "No available agents"
+            return task
+        task.state = TaskState.DISPATCHED
+        task.started_at = utcnow().isoformat()
+        selected = agents[:self.max_parallel]
+        barrier = threading.Barrier(len(selected) + 1, timeout=self.timeout)
+        results: dict[str, TaskResult] = {}
+        threads: list[threading.Thread] = []
+        def run(name: str, adapter: ProcessAdapter) -> None:
+            try:
+                self.tm.allocate(name)
+                result = self._exec_single(task, name, adapter)
+                with self._lock:
+                    results[name] = result
+                    task.assigned_to.append(name)
+                    if result.error:
+                        task.errors[name] = result.error
+                    else:
+                        task.results[name] = result.output
+            except Exception as e:
+                with self._lock:
+                    results[name] = TaskResult(task.id, name, None, str(e))
+            finally:
+                self.tm.release(name)
+                try:
+                    barrier.wait()
+                except Exception:
+                    pass
+        for name, adapter, _ in selected:
+            t = threading.Thread(target=run, args=(name, adapter), daemon=True)
+            t.start()
+            threads.append(t)
+        try:
+            barrier.wait()
+        except Exception:
+            pass
+        for t in threads:
+            t.join(timeout=5)
+        failures = sum(1 for r in results.values() if r.error)
+        successes = sum(1 for r in results.values() if r.output is not None and not r.error)
+        if successes > 0:
+            task.state = TaskState.COMPLETED
+        elif failures == len(selected):
+            task.state = TaskState.FAILED
+        else:
+            task.state = TaskState.COMPLETED
+        task.completed_at = utcnow().isoformat()
+        logger.info(f"Task {task.id[:8]}: {successes} success, {failures} fail across {len(selected)} agents")
+        return task
+
+    def _exec_single(self, task: Task, name: str, adapter: ProcessAdapter) -> TaskResult:
+        msg = Message(
+            msg_type=MT.TASK,
+            sender="master",
+            payload={"task_id": task.id, "description": task.description, "payload": task.payload},
+            task_id=task.id,
+            target=name,
+        )
+        adapter.write_line(msg.to_json())
+        deadline = time.time() + self.timeout
+        collected: list[str] = []
+        def capture(line: str) -> None:
+            if task.id in line:
+                collected.append(line)
+        old = adapter._output_handler
+        adapter.set_output_handler(capture)
+        try:
+            while time.time() < deadline:
+                if adapter.poll():
+                    break
+                if self.hub.is_completed(task.id):
+                    break
+                if task.state in (TaskState.CANCELLED, TaskState.FAILED):
+                    break
+                time.sleep(0.1)
+            for line in collected:
+                try:
+                    data = json.loads(line)
+                    if data.get("task_id") == task.id and data.get("type") == "result":
+                        return TaskResult(task.id, name, data.get("payload", {}).get("output"), data.get("payload", {}).get("error"))
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            raw = self.hub.get_results(task.id)
+            if name in raw:
+                return TaskResult(task.id, name, raw[name], None)
+        finally:
+            adapter.set_output_handler(old)
+        return TaskResult(task.id, name, None, "Timeout")
+
+
+class MasterOrchestrator:
+    """The master node - coordinates all agents, dispatches tasks, monitors health, manages context."""
+
     def __init__(
         self,
         hub: RedisHub,
         tool_manager: ToolManager,
-        strategy: str = "pipeline",
-        max_parallel: int = 3,
-        timeout: int = 300,
-        aggregation: str = "first",
+        node_id: str,
+        max_parallel: int = 5,
+        task_timeout: float = 300.0,
+        result_aggregation: str = "first",
     ):
         self.hub = hub
-        self.tool_manager = tool_manager
-        self.strategy = Strategy(strategy)
+        self.tm = tool_manager
+        self.node_id = node_id
         self.max_parallel = max_parallel
-        self.timeout = timeout
-        self.aggregation = aggregation
+        self.task_timeout = task_timeout
+        self.aggregation = result_aggregation
+
+        self.ctx = ContextManager(hub.context)
+        self.topology = Topology(
+            master=AgentNode(
+                id=node_id,
+                name="polylogue-master",
+                role=AgentRole.MASTER,
+                state=AgentState.ONLINE,
+                capabilities={c for c in AgentCapability},
+                priority=100,
+                slots=max_parallel * 2,
+                label="PolyBridge Master",
+            )
+        )
 
         self._tasks: dict[str, Task] = {}
-        self._results: dict[str, list[TaskResult]] = {}
-        self._task_queue: queue.Queue = queue.Queue()
-        self._results_queue: queue.Queue = queue.Queue()
+        self._results: dict[str, list[TaskResult]] = defaultdict(list)
+        self._pending: queue.Queue[Task] = queue.Queue()
         self._lock = threading.Lock()
         self._running = False
-        self._worker_threads: list[threading.Thread] = []
+        self._workers: list[threading.Thread] = []
+        self._heartbeat_timer: threading.Thread | None = None
+        self._agent_states: dict[str, AgentNode] = {}
+        self._state_listeners: list[Callable[[str, str], None]] = []
+
+        self._pipeline_exec = PipelineExecutor(hub, tool_manager, self.ctx, task_timeout)
+        self._parallel_exec = ParallelExecutor(hub, tool_manager, self.ctx, max_parallel, task_timeout)
+
+    def on_state_change(self, callback: Callable[[str, str], None]) -> None:
+        self._state_listeners.append(callback)
 
     def start(self) -> None:
         self._running = True
         self.hub.start_listening()
-        self.hub.subscribe_tasks(self._handle_task)
-        self.hub.subscribe_results(self._handle_result)
+        self.hub.subscribe_tasks(self._handle_incoming_task)
+        self.hub.subscribe_results(self._handle_incoming_result)
+        self.hub.subscribe_type(MessageType.HEARTBEAT, self._handle_heartbeat)
+        self.hub.subscribe_type(MessageType.REGISTER, self._handle_register)
+        self.hub.subscribe_type(MessageType.STATUS, self._handle_status)
+        self.hub.subscribe_type(MessageType.ALERT, self._handle_alert)
+
+        self.hub.register_agent(self.topology.master)
+        self.tm.on_state_change(self._tool_state_changed)
 
         for i in range(self.max_parallel):
-            t = threading.Thread(target=self._worker_loop, daemon=True, name=f"worker-{i}")
+            t = threading.Thread(target=self._worker_loop, daemon=True, name=f"orchestrator-worker-{i}")
             t.start()
-            self._worker_threads.append(t)
+            self._workers.append(t)
 
-        logger.info(f"Orchestrator started with {self.max_parallel} workers")
+        self._heartbeat_timer = threading.Thread(target=self._heartbeat_sender, daemon=True, name="orchestrator-hb")
+        self._heartbeat_timer.start()
+
+        self._sync_agents_to_topology()
+        logger.info(f"Master orchestrator {self.node_id[:8]} started with {self.max_parallel} workers")
 
     def stop(self) -> None:
         self._running = False
-        for t in self._worker_threads:
-            if t.is_alive():
-                t.join(timeout=5)
-        self.tool_manager.stop_all()
-        logger.info("Orchestrator stopped")
+        for w in self._workers:
+            if w.is_alive():
+                w.join(timeout=3)
+        if self._heartbeat_timer and self._heartbeat_timer.is_alive():
+            self._heartbeat_timer.join(timeout=3)
+        self.hub.deregister_agent(self.node_id)
+        logger.info("Master orchestrator stopped")
 
-    def submit_task(self, description: str, payload: dict) -> str:
-        task_id = str(uuid.uuid4())
-        task = Task(id=task_id, description=description, payload=payload)
-
-        with self._lock:
-            self._tasks[task_id] = task
-            self._results[task_id] = []
-
-        msg = Message(
-            msg_type=MessageType.TASK,
-            sender="orchestrator",
+    def submit_task(self, description: str, payload: dict, strategy: Strategy = Strategy.PARALLEL, capabilities: list[str] | None = None, priority: int = 5, timeout: float | None = None) -> str:
+        task = Task(
+            description=description,
             payload=payload,
-            task_id=task_id,
+            strategy=strategy,
+            required_capabilities=[AgentCapability(c) for c in (capabilities or [])],
+            priority=priority,
+            timeout_seconds=timeout or self.task_timeout,
+        )
+        with self._lock:
+            self._tasks[task.id] = task
+        self._pending.put(task)
+        msg = Message(
+            msg_type=MT.TASK,
+            sender=self.node_id,
+            payload={"task_id": task.id, "description": description, "strategy": strategy.value},
+            task_id=task.id,
         )
         self.hub.publish_task(msg)
-        
-        logger.info(f"Submitted task {task_id}: {description}")
-        return task_id
+        logger.info(f"Task {task.id[:8]} submitted: {description[:60]} (strategy={strategy.value})")
+        return task.id
 
-    def get_task_status(self, task_id: str) -> Task | None:
+    def get_task(self, task_id: str) -> Task | None:
         with self._lock:
             return self._tasks.get(task_id)
 
-    def get_result(self, task_id: str) -> Any:
-        with self._lock:
-            results = self._results.get(task_id, [])
-        
-        if not results:
-            return None
-
-        if self.aggregation == "first":
-            for r in results:
-                if r.error is None:
-                    return r.output
-            return results[0].error
-
-        if self.aggregation == "all":
-            return [r.output for r in results]
-
-        return results[0].output if results else None
-
-    def wait_for_result(self, task_id: str, timeout: int = 0) -> Any:
+    def wait_for_task(self, task_id: str, timeout: float = 60.0) -> Task | None:
         start = time.time()
-        while True:
-            task = self.get_task_status(task_id)
-            if task and task.state in (TaskState.COMPLETED, TaskState.FAILED):
-                return self.get_result(task_id)
-            if timeout > 0 and time.time() - start > timeout:
-                return None
+        while time.time() - start < timeout:
+            task = self.get_task(task_id)
+            if task and task.is_done:
+                return task
             time.sleep(0.1)
+        return self.get_task(task_id)
 
-    def _handle_task(self, message: Message) -> None:
-        task_id = message.task_id
-        payload = message.payload
-
+    def get_task_result(self, task_id: str) -> Any:
         with self._lock:
-            if task_id in self._tasks:
-                task = self._tasks[task_id]
-            else:
-                task = Task(
-                    id=task_id,
-                    description=payload.get("description", "unknown"),
-                    payload=payload,
-                )
-                self._tasks[task_id] = task
+            task = self._tasks.get(task_id)
+            if not task:
+                return None
+            results = task.results
+            errors = task.errors
+        if not results:
+            return None if not errors else {"error": errors}
+        if self.aggregation == "first":
+            for agent, out in results.items():
+                if out is not None:
+                    return out
+            return {"error": errors}
+        if self.aggregation == "all":
+            return {"results": results, "errors": errors}
+        return results
 
-        if self.strategy == Strategy.PIPELINE:
-            self._assign_pipeline(task)
-        elif self.strategy == Strategy.PARALLEL:
-            self._assign_parallel(task)
-        else:
-            self._assign_hybrid(task)
-
-    def _assign_pipeline(self, task: Task) -> None:
-        tool = self._choose_tool(task.payload.get("capabilities", []))
-        if tool:
-            self._assign_task(task, tool)
-        else:
-            task.state = TaskState.FAILED
-            task.error = "No available tool"
-
-    def _assign_parallel(self, task: Task) -> None:
-        tools = self.tool_manager.find_available(task.payload.get("capabilities", []))
-        if not tools:
-            task.state = TaskState.FAILED
-            task.error = "No available tool"
-            return
-
-        for tool in tools[:self.max_parallel]:
-            self._assign_task(task, tool)
-
-    def _assign_hybrid(self, task: Task) -> None:
-        tools = self.tool_manager.find_available(task.payload.get("capabilities", []))
-        if tools:
-            self._assign_task(task, tools[0])
-
-    def _assign_task(self, task: Task, tool: ProcessAdapter) -> None:
-        task.state = TaskState.RUNNING
-        task.assigned_to = tool.config.name
-        self.tool_manager.allocate(tool.config.name)
-
-        msg = Message(
-            msg_type=MessageType.TASK,
-            sender="orchestrator",
-            payload=task.payload,
-            task_id=task.id,
-            correlation_id=task.id,
-        )
-        
-        tool.write_line(json.dumps(msg.to_dict()))
-        logger.info(f"Assigned task {task.id} to {tool.config.name}")
-
-    def _choose_tool(self, capabilities: list[str]) -> ProcessAdapter | None:
-        tools = self.tool_manager.find_available(capabilities)
-        return tools[0] if tools else None
-
-    def _handle_result(self, message: Message) -> None:
-        task_id = message.correlation_id
-        payload = message.payload
-
-        result = TaskResult(
-            task_id=task_id,
-            tool=message.sender,
-            output=payload.get("output"),
-            error=payload.get("error"),
-        )
-
+    def _handle_incoming_task(self, msg: Message) -> None:
+        task_id = msg.task_id
         with self._lock:
             if task_id not in self._tasks:
-                return
-            self._results.setdefault(task_id, []).append(result)
-            
-            task = self._tasks[task_id]
+                self._tasks[task_id] = Task(
+                    id=task_id,
+                    description=msg.payload.get("description", "remote task"),
+                    payload=msg.payload.get("payload", msg.payload),
+                )
+                self._pending.put(self._tasks[task_id])
 
-        if message.sender and task.assigned_to:
-            self.tool_manager.release(task.assigned_to)
+    def _handle_incoming_result(self, msg: Message) -> None:
+        task_id = msg.correlation_id
+        payload = msg.payload or {}
+        result = TaskResult(task_id, msg.sender, payload.get("output"), payload.get("error"))
+        with self._lock:
+            self._results[task_id].append(result)
+            task = self._tasks.get(task_id)
+            if task:
+                if result.error:
+                    task.errors[msg.sender] = result.error
+                else:
+                    task.results[msg.sender] = result.output
+                self._check_task_completion(task)
+        self.hub.store_result(task_id, msg.sender, result.output or result.error)
 
-        all_results = self._results[task_id]
-        if self.aggregation == "first" and result.output and not result.error:
-            task.state = TaskState.COMPLETED
-            task.result = result.output
-            task.completed_at = datetime.now(timezone.utc)
-        elif len(all_results) >= len(self.tool_manager.list_tools()):
-            task.state = TaskState.COMPLETED
-            task.result = self.get_result(task_id)
-            task.completed_at = datetime.now(timezone.utc)
+    def _check_task_completion(self, task: Task) -> None:
+        if task.is_done:
+            return
+        if self.aggregation == "first":
+            for out in task.results.values():
+                if out is not None:
+                    self._finalize_task(task, TaskState.COMPLETED)
+                    return
+        agent_count = self._count_assigned(task)
+        result_count = len(task.results) + len(task.errors)
+        if result_count >= agent_count and agent_count > 0:
+            has_any_success = len(task.results) > 0
+            self._finalize_task(task, TaskState.COMPLETED if has_any_success else TaskState.FAILED)
 
-        logger.info(f"Received result from {message.sender} for task {task_id}")
+    def _count_assigned(self, task: Task) -> int:
+        agents = self.tm.find_available(
+            [c.value for c in task.required_capabilities]
+        )
+        return min(len(agents), self.max_parallel)
+
+    def _finalize_task(self, task: Task, state: TaskState) -> None:
+        task.state = state
+        task.completed_at = utcnow().isoformat()
+        self.hub.ack_task(task.id)
+        logger.info(f"Task {task.id[:8]} finalized: {state.value}")
+
+    def _handle_heartbeat(self, msg: Message) -> None:
+        pass
+
+    def _handle_register(self, msg: Message) -> None:
+        pass
+
+    def _handle_status(self, msg: Message) -> None:
+        pass
+
+    def _handle_alert(self, msg: Message) -> None:
+        event = msg.payload.get("event")
+        agent_id = msg.payload.get("agent_id")
+        if event == "agent_stale" and agent_id:
+            logger.warning(f"Agent {agent_id[:8]} is stale, removing from topology")
+            with self._lock:
+                self._agent_states.pop(agent_id, None)
+
+    def _tool_state_changed(self, name: str, old: AgentState, new: AgentState) -> None:
+        logger.info(f"Tool {name} state: {old.value} -> {new.value}")
+        for cb in self._state_listeners:
+            cb(name, new.value)
+
+    def _heartbeat_sender(self) -> None:
+        while self._running:
+            time.sleep(5)
+            try:
+                master = self.topology.master
+                self.hub.send_heartbeat(
+                    agent_id=master.id,
+                    role=master.role,
+                    state=AgentState.ONLINE,
+                    pid=master.pid,
+                    slots_used=master.slots_used,
+                    slots_total=master.slots,
+                    load=0.0,
+                )
+            except Exception as e:
+                logger.debug(f"Heartbeat error: {e}")
+
+    def _sync_agents_to_topology(self) -> None:
+        for name in self.tm.list_tools():
+            rec = self.tm.get_record(name)
+            if not rec:
+                continue
+            adapter = rec.adapter
+            node = AgentNode(
+                id=adapter.agent_id,
+                name=name,
+                role=AgentRole.SLAVE,
+                state=adapter.state,
+                capabilities={AgentCapability(c) for c in rec.capabilities},
+                priority=rec.priority,
+                slots=adapter.slots,
+                pid=adapter.pid,
+                label=rec.label,
+                parent_id=self.node_id,
+            )
+            self.topology.slaves[node.id] = node
+            self._agent_states[node.id] = node
+            self.hub.register_agent(node)
 
     def _worker_loop(self) -> None:
         while self._running:
             try:
-                task_msg = self._task_queue.get(timeout=1)
-                self._execute_task(task_msg)
+                task = self._pending.get(timeout=1)
             except queue.Empty:
                 continue
+            try:
+                self._dispatch_task(task)
             except Exception as e:
-                logger.error(f"Worker error: {e}")
+                logger.error(f"Dispatch error for task {task.id[:8]}: {e}")
+                task.state = TaskState.FAILED
+                task.errors["_system"] = str(e)
+                task.completed_at = utcnow().isoformat()
 
-    def _execute_task(self, task_msg: dict) -> None:
-        pass
+    def _dispatch_task(self, task: Task) -> None:
+        logger.info(f"Dispatching task {task.id[:8]}: {task.description[:50]} (strategy={task.strategy.value})")
+        caps = [c.value for c in task.required_capabilities] if task.required_capabilities else None
+        agents = self.tm.find_available(caps)
+        if not agents:
+            task.state = TaskState.FAILED
+            task.errors["_system"] = f"No available agents for capabilities: {caps}"
+            task.completed_at = utcnow().isoformat()
+            logger.warning(f"Task {task.id[:8]}: no agents available")
+            return
+        logger.info(f"Task {task.id[:8]}: found {len(agents)} agents for dispatch")
+        if task.strategy == Strategy.PIPELINE:
+            self._pipeline_exec.execute(task, agents)
+        elif task.strategy in (Strategy.PARALLEL, Strategy.ALL):
+            self._parallel_exec.execute(task, agents)
+        elif task.strategy == Strategy.HYBRID:
+            self._pipeline_exec.execute(task, agents[:1])
+        elif task.strategy == Strategy.LEADER_ELECT:
+            self._pipeline_exec.execute(task, agents[:1])
+        elif task.strategy == Strategy.CONSENSUS:
+            self._parallel_exec.execute(task, agents)
+        else:
+            self._parallel_exec.execute(task, agents)
 
 
-def create_orchestrator(config: dict, hub: RedisHub, tool_manager: ToolManager) -> Orchestrator:
-    return Orchestrator(
+class DirectorAgent:
+    """A director can break tasks into sub-tasks and assign them to specific slaves."""
+
+    def __init__(self, agent_id: str, master: MasterOrchestrator):
+        self.agent_id = agent_id
+        self.master = master
+
+    def delegate(self, subtask: Task, target_agent: str) -> str:
+        msg = Message(
+            msg_type=MT.TASK,
+            sender=self.agent_id,
+            payload=subtask.payload,
+            task_id=subtask.id,
+            target=target_agent,
+            context_scope=subtask.id,
+        )
+        self.master.hub.publish_direct(target_agent, msg)
+        return subtask.id
+
+    def broadcast(self, task: Task) -> list[str]:
+        ids = []
+        msg = Message(
+            msg_type=MT.BROADCAST,
+            sender=self.agent_id,
+            payload=task.payload,
+            task_id=task.id,
+        )
+        self.master.hub.publish_broadcast(msg)
+        ids.append(task.id)
+        return ids
+
+    def sync_context(self, source: str, targets: list[str], keys: list[str]) -> None:
+        for t in targets:
+            self.master.ctx.sync_to_agent(source, t, keys)
+
+
+def create_orchestrator(config: dict, hub: RedisHub, tool_manager: ToolManager) -> MasterOrchestrator:
+    return MasterOrchestrator(
         hub=hub,
         tool_manager=tool_manager,
-        strategy=config.get("strategy", "pipeline"),
-        max_parallel=config.get("max_parallel_tasks", 3),
-        timeout=config.get("task_timeout", 300),
-        aggregation=config.get("result_aggregation", "first"),
+        node_id=config.get("node_id", f"master:{uuid.uuid4().hex[:12]}"),
+        max_parallel=config.get("max_parallel", 5),
+        task_timeout=config.get("task_timeout", 300.0),
+        result_aggregation=config.get("result_aggregation", "first"),
     )
