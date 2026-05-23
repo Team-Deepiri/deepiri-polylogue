@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable
 
 import redis  # type: ignore
@@ -471,12 +471,12 @@ class RedisHub:
     def list_agents(self) -> dict[str, AgentNode]:
         return self.registry.list_agents() if self.registry else {}
 
-    def ack_task(self, task_id: str) -> None:
+    def ack_task(self, task_id: str, ttl: int = 86400) -> None:
         if not self._redis:
             return
         key = f"{self.prefix}:queue:completed"
         self._redis.sadd(key, task_id)
-        self._redis.expire(key, 3600)
+        self._redis.expire(key, ttl)
 
     def is_completed(self, task_id: str) -> bool:
         if not self._redis:
@@ -484,12 +484,12 @@ class RedisHub:
         key = f"{self.prefix}:queue:completed"
         return bool(self._redis.sismember(key, task_id))
 
-    def store_result(self, task_id: str, agent_id: str, output: Any) -> None:
+    def store_result(self, task_id: str, agent_id: str, output: Any, ttl: int = 86400) -> None:
         if not self._redis:
             return
         key = f"{self.prefix}:results:{task_id}"
         self._redis.hset(key, agent_id, json.dumps(output))
-        self._redis.expire(key, 3600)
+        self._redis.expire(key, ttl)
 
     def get_results(self, task_id: str) -> dict[str, Any]:
         if not self._redis:
@@ -497,6 +497,54 @@ class RedisHub:
         key = f"{self.prefix}:results:{task_id}"
         raw = self._redis.hgetall(key)
         return {k: json.loads(v) for k, v in raw.items()}
+
+    def durable_enqueue(self, queue_name: str, item: dict, ttl: int = 86400) -> None:
+        if not self._redis:
+            return
+        key = f"{self.prefix}:durable:{queue_name}"
+        self._redis.rpush(key, json.dumps(item))
+        self._redis.expire(key, ttl)
+
+    def durable_dequeue(self, queue_name: str, timeout: int = 5) -> dict | None:
+        if not self._redis:
+            return None
+        key = f"{self.prefix}:durable:{queue_name}"
+        result = self._redis.blpop(key, timeout=timeout)
+        if result:
+            return json.loads(result[1])
+        return None
+
+    def durable_queue_len(self, queue_name: str) -> int:
+        if not self._redis:
+            return 0
+        key = f"{self.prefix}:durable:{queue_name}"
+        return int(self._redis.llen(key))
+
+    def list_durable_queues(self) -> list[str]:
+        if not self._redis:
+            return []
+        pattern = f"{self.prefix}:durable:*"
+        keys = self._redis.keys(pattern)
+        return [k.split(":", 2)[2] for k in keys]
+
+    def store_artifact(self, task_id: str, name: str, data: str, ttl: int = 86400) -> None:
+        if not self._redis:
+            return
+        key = f"{self.prefix}:artifacts:{task_id}:{name}"
+        self._redis.setex(key, ttl, data)
+
+    def get_artifact(self, task_id: str, name: str) -> str | None:
+        if not self._redis:
+            return None
+        key = f"{self.prefix}:artifacts:{task_id}:{name}"
+        return self._redis.get(key)
+
+    def list_artifacts(self, task_id: str) -> list[str]:
+        if not self._redis:
+            return []
+        pattern = f"{self.prefix}:artifacts:{task_id}:*"
+        keys = self._redis.keys(pattern)
+        return [k.rsplit(":", 1)[1] for k in keys]
 
 
 def create_hub(config: dict | None = None, **kwargs) -> RedisHub:

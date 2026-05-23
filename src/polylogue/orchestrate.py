@@ -11,7 +11,9 @@ import uuid
 from collections import defaultdict
 from typing import Any, Callable
 
+from polylogue.dag import DAGScheduler
 from polylogue.hub import Message, MessageType, RedisHub, ContextIsolator
+from polylogue.journal_bridge import JournalBridge
 from polylogue.models import (
     AgentCapability,
     AgentNode,
@@ -24,6 +26,7 @@ from polylogue.models import (
     Topology,
     utcnow,
 )
+from polylogue.retry import RetryExecutor
 from polylogue.tools import ProcessAdapter, ToolManager, ToolRecord
 
 logger = logging.getLogger(__name__)
@@ -304,6 +307,13 @@ class MasterOrchestrator:
         self._pipeline_exec = PipelineExecutor(hub, tool_manager, self.ctx, task_timeout)
         self._parallel_exec = ParallelExecutor(hub, tool_manager, self.ctx, max_parallel, task_timeout)
 
+        self.dag_scheduler = DAGScheduler(executor=self._run_task, max_parallel=max_parallel)
+        self.retry_executor = RetryExecutor()
+        self.journal: JournalBridge | None = None
+
+    def set_journal_bridge(self, jb: JournalBridge) -> None:
+        self.journal = jb
+
     def on_state_change(self, callback: Callable[[str, str], None]) -> None:
         self._state_listeners.append(callback)
 
@@ -484,6 +494,46 @@ class MasterOrchestrator:
                 )
             except Exception as e:
                 logger.debug(f"Heartbeat error: {e}")
+
+    def submit_dag(self, task_descriptions: list[tuple[str, dict, list[str]]]) -> list[str]:
+        ids = []
+        for desc, payload, deps in task_descriptions:
+            task = Task(description=desc, payload=payload)
+            with self._lock:
+                self._tasks[task.id] = task
+            ids.append(self.dag_scheduler.submit(task, deps))
+        return ids
+
+    def wait_dag(self, timeout: float = 300.0) -> dict[str, str]:
+        states = self.dag_scheduler.wait_all(timeout=timeout)
+        return {tid: s.value for tid, s in states.items()}
+
+    def _run_task(self, task: Task) -> bool:
+        caps = [c.value for c in task.required_capabilities] if task.required_capabilities else None
+        agents = self.tm.find_available(caps)
+        if not agents:
+            task.state = TaskState.FAILED
+            task.errors["_system"] = "No available agents"
+            task.completed_at = utcnow().isoformat()
+            if self.journal:
+                self.journal.write_task_failed(task.id, task.description, task.errors, task.elapsed)
+            return False
+        try:
+            self._dispatch_task(task)
+            if task.state == TaskState.COMPLETED:
+                if self.journal:
+                    self.journal.write_task_completed(task.id, task.description, task.results, task.elapsed)
+                return True
+            if self.journal:
+                self.journal.write_task_failed(task.id, task.description, task.errors, task.elapsed)
+            return False
+        except Exception as e:
+            task.state = TaskState.FAILED
+            task.errors["_system"] = str(e)
+            task.completed_at = utcnow().isoformat()
+            if self.journal:
+                self.journal.write_task_failed(task.id, task.description, task.errors, task.elapsed)
+            return False
 
     def _sync_agents_to_topology(self) -> None:
         for name in self.tm.list_tools():

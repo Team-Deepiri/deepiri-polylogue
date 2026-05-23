@@ -161,6 +161,34 @@ class BridgeConfig:
     def node_id(self) -> str:
         return self._data.get("node_id", "")
 
+    @property
+    def journal(self) -> dict:
+        return self._data.get("journal", {})
+
+    @property
+    def native_bridge(self) -> dict:
+        return self._data.get("native_bridge", {})
+
+    @property
+    def api_server(self) -> dict:
+        return self._data.get("api", {})
+
+    @property
+    def election(self) -> dict:
+        return self._data.get("election", {})
+
+    @property
+    def resource_monitor(self) -> dict:
+        return self._data.get("resource_monitor", {})
+
+    @property
+    def transport(self) -> dict:
+        return self._data.get("transport", {})
+
+    @property
+    def wire_server(self) -> dict:
+        return self._data.get("wire_server", {})
+
 
 def load_config(config_path: str | None = None) -> BridgeConfig:
     if config_path:
