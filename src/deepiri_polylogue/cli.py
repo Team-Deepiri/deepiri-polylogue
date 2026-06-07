@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     s_tail = sub.add_parser("tail", help="Print last N journal events as JSON")
     s_tail.add_argument("--lines", type=int, default=20)
 
-    s_status = sub.add_parser("status", help="Show meta + roster + journal path")
+    sub.add_parser("status", help="Show meta + roster + journal path")
 
     s_pack = sub.add_parser("sync-pack", help="Render Markdown pack (journal + context + presence + scratch)")
     s_pack.add_argument("--lines", type=int, default=40)
