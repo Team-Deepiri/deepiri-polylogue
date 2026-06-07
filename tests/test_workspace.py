@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from deepiri_polylogue.pack import render_sync_pack

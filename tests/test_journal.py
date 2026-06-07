@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from deepiri_polylogue.journal import append_event, tail_events
