@@ -1,151 +1,224 @@
-name: polylogue
-version: "1.0.0"
-description: Multi-agent AI coding assistant orchestration via Redis
+# PolyBridge - Multi-agent orchestration bridge configuration
+# Master/slave topology with context isolation, heartbeat monitoring,
+# process supervision, DAG scheduling, leader election, filesystem journal,
+# native TCP hub, WebSocket API, TLS transport, and resource monitoring.
 
-# Redis connection settings
+name: polylogue
+version: "2.0.0"
+description: "PolyBridge — Low-level master/slave agent bridge for parallel multi-provider AI orchestration"
+node_id: "master:polylogue-01"
+
+# ── Redis connection ──────────────────────────────────────────────────
 redis:
   host: "127.0.0.1"
   port: 6379
   db: 0
   password: null
   prefix: "polylogue"
+  heartbeat_interval: 5.0     # seconds between hub heartbeats
+  stale_timeout: 15.0          # seconds before an agent is marked stale
 
-# Message queue settings
+# ── Message queue settings ────────────────────────────────────────────
 queue:
   task_channel: "tasks"
   result_channel: "results"
-  broadcast_mode: "fanout"  # fanout | round_robin | pipeline
+  broadcast_mode: "fanout"     # fanout | round_robin
 
-# Tool discovery - manually configured AI assistants
+# ── Agent topology ────────────────────────────────────────────────────
+topology:
+  master:
+    id: "master:polylogue-01"
+    role: "master"
+    slots: 16
+    priority: 100
+    label: "PolyBridge Primary"
+  slaves:
+    - name: opencode
+      role: slave
+      parent: master:polylogue-01
+      context_scope: isolated
+    - name: claude_code
+      role: slave
+      parent: master:polylogue-01
+      context_scope: isolated
+    - name: gemini_code
+      role: slave
+      parent: master:polylogue-01
+      context_scope: isolated
+  directors:
+    - name: opencode
+      role: director
+      can_delegate: true
+      context_scope: "shared:opencode"
+
+# ── Tool/agent definitions ────────────────────────────────────────────
 tools:
   opencode:
     enabled: true
-    type: "cli"
-    command: "opencode"
+    type: cli
+    command: opencode
     args: ["--interactive"]
-    env: {}
     workdir: "."
     startup_delay: 2
+    slots: 2
+    priority: 10
+    label: "Opencode AI"
+    capabilities: ["code_edit", "file_operations", "terminal", "coordination"]
     health_check:
       enabled: true
-      interval: 30
-      command: "echo"
+      interval: 15
+      command: "echo ping"
       timeout: 5
-    capabilities:
-      - "code_edit"
-      - "file_operations"
-      - "terminal"
-    slots: 1  # how many concurrent tasks
-    priority: 10
-
   claude_code:
     enabled: true
-    type: "cli"
-    command: "claude"
+    type: cli
+    command: claude
     args: ["--print-only", "--no-stream"]
-    env: {}
     workdir: "."
     startup_delay: 3
+    slots: 1
+    priority: 9
+    label: "Claude Code CLI"
+    capabilities: ["code_edit", "file_operations", "terminal", "reasoning"]
     health_check:
       enabled: true
-      interval: 30
-      command: "echo"
+      interval: 15
+      command: "echo ping"
       timeout: 5
-    capabilities:
-      - "code_edit"
-      - "file_operations"
-      - "terminal"
-    slots: 1
-    priority: 10
-
   gemini_code:
     enabled: true
-    type: "cli"
-    command: "gemini"
+    type: cli
+    command: gemini
     args: ["--local", "--no-stream"]
-    env: {}
     workdir: "."
     startup_delay: 2
+    slots: 1
+    priority: 8
+    label: "Gemini Code Assist"
+    capabilities: ["code_edit", "file_operations", "terminal", "reasoning"]
     health_check:
       enabled: true
-      interval: 30
-      command: "echo"
+      interval: 15
+      command: "echo ping"
       timeout: 5
-    capabilities:
-      - "code_edit"
-      - "file_operations"
-      - "terminal"
-    slots: 1
-    priority: 10
-
   cursor:
     enabled: false
-    type: "cursor_cli"  # special handler for Cursor
-    command: "cursor"
+    type: cursor_cli
+    command: cursor
     args: ["--ai-assist"]
-    env: {}
     workdir: "."
     startup_delay: 5
+    slots: 1
+    priority: 7
+    label: "Cursor AI Editor"
+    capabilities: ["code_edit", "file_operations", "code_completion"]
     health_check:
       enabled: true
       interval: 30
-    capabilities:
-      - "code_edit"
-      - "file_operations"
-    slots: 1
-    priority: 10
-
   vscode_assistant:
     enabled: false
-    type: "vscode_extension"
-    command: "code"
+    type: vscode_extension
+    command: code
     args: ["--wait"]
-    env: {}
     workdir: "."
     startup_delay: 3
-    health_check:
-      enabled: true
-      interval: 30
-    capabilities:
-      - "code_completion"
     slots: 2
     priority: 5
-
-  copilot:
-    enabled: false
-    type: "copilot_cli"
-    command: "copilot-gateway"
-    args: []
-    env: {}
-    workdir: "."
-    startup_delay: 2
+    label: "VS Code Assistant"
+    capabilities: ["code_completion"]
     health_check:
       enabled: true
       interval: 30
-    capabilities:
-      - "code_completion"
-      - "code_suggestions"
+  copilot:
+    enabled: false
+    type: copilot_cli
+    command: copilot-gateway
+    args: []
+    workdir: "."
+    startup_delay: 2
     slots: 4
     priority: 5
+    label: "GitHub Copilot"
+    capabilities: ["code_completion", "code_suggestions"]
+    health_check:
+      enabled: true
+      interval: 30
 
-# Orchestration settings
+# ── Filesystem journal bridge ─────────────────────────────────────────
+journal:
+  enabled: true
+  root: ""                          # empty = auto-detect from $DEEPIRI_POLYLOGUE_ROOT or .deepiri/polylogue
+  flush_interval: 2.0               # seconds between batch flushes to disk
+
+# ── Native C bridge (polybridge TCP fan-out) ──────────────────────────
+native_bridge:
+  enabled: true
+  host: "127.0.0.1"
+  port: 7847
+  auto_build: true                  # attempt `make` in native/polybridge/ if binary missing
+
+# ── WebSocket / HTTP API server ───────────────────────────────────────
+api:
+  enabled: false
+  host: "127.0.0.1"
+  port: 9876
+  tls_cert: ""
+  tls_key: ""
+
+# ── Leader election (high-availability) ───────────────────────────────
+election:
+  enabled: false
+  lease_seconds: 15.0
+  heartbeat_interval: 5.0
+
+# ── Resource monitor ──────────────────────────────────────────────────
+resource_monitor:
+  enabled: true
+  interval: 10.0                    # seconds between snapshots
+
+# ── TLS/mTLS transport layer ──────────────────────────────────────────
+transport:
+  cert_path: ""
+  key_path: ""
+  ca_cert_path: ""
+  verify_mode: "required"           # required | optional | none
+  min_version: "TLSv1.2"
+
+# ── Wire server (TCP/TLS agent connection) ────────────────────────────
+wire_server:
+  enabled: false
+  host: "127.0.0.1"
+  port: 7848
+
+# ── Orchestration settings ────────────────────────────────────────────
 orchestration:
-  strategy: "pipeline"  # pipeline | parallel | hybrid
-  max_parallel_tasks: 3
-  task_timeout: 300
-  result_aggregation: "first"  # first | all | consensus
+  strategy: "parallel"              # pipeline | parallel | hybrid | leader_elect | consensus | all
+  max_parallel: 5                   # max agents to fan-out to per task
+  task_timeout: 300                 # seconds before a task times out
+  result_aggregation: "first"       # first | all | consensus
   consensus:
     enabled: false
-    threshold: 0.6  # 60% agreement required
+    threshold: 0.6
 
-# Logging
+# ── Process supervision ───────────────────────────────────────────────
+supervision:
+  max_restarts: 5                   # max restarts within restart_window
+  restart_window: 60                # seconds
+  health_interval: 15               # seconds between health checks
+  auto_restart: true
+
+# ── Context isolation ─────────────────────────────────────────────────
+context:
+  mode: "isolated"                  # isolated | shared | hybrid
+  default_scope: "agent"
+  shared_keys:
+    - "workspace_root"
+    - "project_info"
+    - "global_instructions"
+
+# ── Logging ───────────────────────────────────────────────────────────
 logging:
   level: "INFO"
   file: "polylogue.log"
   console: true
-
-# Network bridge (optional, for TCP-based polybridge)
-bridge:
-  enabled: false
-  host: "127.0.0.1"
-  port: 7847
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

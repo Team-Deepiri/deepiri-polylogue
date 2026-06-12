@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Polylogue - Multi-agent AI coding assistant orchestration via Redis."""
+"""PolyBridge - Multi-agent AI bridge with master/slave orchestration & context isolation."""
 import sys
 from polylogue import main
 
