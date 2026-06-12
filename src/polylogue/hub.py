@@ -292,7 +292,7 @@ class RedisHub:
         self._redis.ping()
         self.registry = AgentRegistry(self._redis, self.prefix)
         self.context = ContextIsolator(self._redis, self.prefix)
-        logger.info(f"Bridge connected to Redis at {self.host}:{self.port}")
+        logger.info("Bridge connected to Redis")
         return self
 
     def disconnect(self) -> None:
