@@ -22,3 +22,8 @@ def test_cli_happy_path(tmp_path, monkeypatch) -> None:
     assert main(["subagent", "add", "--parent", "p1", "--id", "subx", "--label", "Worker", "--path", "tests/:read"]) == 0
     assert main(["scratch-dir", "--id", "p1"]) == 0
     assert main(["subagent", "remove", "--parent", "p1", "--id", "subx"]) == 0
+    readme = tmp_path / "README.md"
+    readme.write_text("# smoke\n", encoding="utf-8")
+    assert main(["file", "read", "--id", "p1", "--path", "README.md"]) == 0
+    assert main(["file", "check", "--id", "p1", "--json"]) == 0
+    assert main(["file", "assert", "--id", "p1", "--path", "README.md"]) == 0

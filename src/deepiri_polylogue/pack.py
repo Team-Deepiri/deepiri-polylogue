@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import filetime as ft
 from .journal import journal_path, tail_events
 from .participants import load_participants
 from .store import load_meta
@@ -35,6 +36,17 @@ def render_sync_pack(
     lines_out.append(f"- **Shared context file:** `{ws.context_path(root)}`")
     lines_out.append(f"- **Memory file:** `{ws.memory_path(root)}`")
     lines_out.append(f"- **Presence file:** `{ws.presence_path(root)}`")
+    lines_out.append(f"- **File reads:** `{ft.file_reads_path(root)}`")
+    lines_out.append("")
+    stale = ft.list_stale(root)
+    lines_out.append("## Stale reads (modified since last `polylogue file read`)")
+    if not stale:
+        lines_out.append("_(none — or no tracked reads yet)_")
+    else:
+        for s in stale:
+            lines_out.append(
+                f"- **`{s.actor_id}`** `{s.path}` — last mod `{s.last_modification}`; read `{s.read_at}`"
+            )
     lines_out.append("")
     lines_out.append("## Who is where (presence + subagents)")
     actors = presence.get("actors", [])
