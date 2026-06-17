@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from . import filetime as ft
 from .journal import append_event, journal_path, tail_events
 from .models import Participant, event_line, utc_now_iso
 from .pack import render_sync_pack
@@ -129,6 +130,26 @@ def main(argv: list[str] | None = None) -> int:
     s_sw.add_argument("--id", required=True, dest="participant_id")
     s_sw.add_argument("--name", required=True, help="Relative path under scratch, e.g. notes/x.md")
 
+    # --- file read tracking (OpenCode-style stale detection, persisted cross-surface) ---
+    s_file = sub.add_parser("file", help="Track file reads and detect external modifications")
+    file_sub = s_file.add_subparsers(dest="file_cmd", required=True)
+
+    f_read = file_sub.add_parser("read", help="Record that an actor read a file (before edit)")
+    f_read.add_argument("--id", required=True, dest="actor_id", help="Actor / participant id")
+    f_read.add_argument("--path", required=True, help="File path (relative to --cwd or absolute)")
+    f_read.add_argument("--cwd", type=Path, default=None, help="Resolve relative paths against this directory")
+
+    f_check = file_sub.add_parser("check", help="List files modified since last recorded read")
+    f_check.add_argument("--id", dest="actor_id", default=None, help="Filter to one actor")
+    f_check.add_argument("--path", default=None, help="Filter to one file")
+    f_check.add_argument("--cwd", type=Path, default=None)
+    f_check.add_argument("--json", action="store_true", help="JSON array to stdout")
+
+    f_assert = file_sub.add_parser("assert", help="Exit 1 if file changed since this actor last read it")
+    f_assert.add_argument("--id", required=True, dest="actor_id")
+    f_assert.add_argument("--path", required=True)
+    f_assert.add_argument("--cwd", type=Path, default=None)
+
     args = p.parse_args(argv)
     root = args.root if args.root else polylogue_root(args.cwd)
 
@@ -209,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
                 "context": str(ws.context_path(root)),
                 "memory": str(ws.memory_path(root)),
                 "presence": str(ws.presence_path(root)),
+                "file_reads": str(ft.file_reads_path(root)),
                 "scratch": str(ws.scratch_root(root)),
             }
             print(json.dumps(out, indent=2))
@@ -248,6 +270,9 @@ def main(argv: list[str] | None = None) -> int:
             dest = ws.scratch_write_stdin(root, args.participant_id, args.name)
             print(str(dest.resolve()), file=sys.stderr)
             return 0
+
+        if args.cmd == "file":
+            return _cmd_file(root, args)
 
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
@@ -368,6 +393,37 @@ def _cmd_context(root: Path, args: argparse.Namespace) -> int:
         prev = cp.read_bytes().decode("utf-8", errors="replace") if cp.is_file() else ""
         block = prev.rstrip() + "\n\n" + args.text.strip() + "\n"
         ws.atomic_write_text(cp, block)
+        return 0
+    return 1
+
+
+def _cmd_file(root: Path, args: argparse.Namespace) -> int:
+    if args.file_cmd == "read":
+        touch_participant(root, args.actor_id)
+        rec = ft.record_read(root, actor_id=args.actor_id, path=args.path, cwd=args.cwd)
+        print(json.dumps(rec.__dict__, indent=2, ensure_ascii=False))
+        return 0
+    if args.file_cmd == "check":
+        stale = ft.list_stale(root, actor_id=args.actor_id, path=args.path, cwd=args.cwd)
+        if args.json:
+            rows = [s.__dict__ for s in stale]
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+            return 0
+        if not stale:
+            return 0
+        for s in stale:
+            print(s.format_message())
+            print("---")
+        return 0
+    if args.file_cmd == "assert":
+        try:
+            stale = ft.assert_fresh(root, actor_id=args.actor_id, path=args.path, cwd=args.cwd)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        if stale:
+            print(stale.format_message(), file=sys.stderr)
+            return 1
         return 0
     return 1
 
