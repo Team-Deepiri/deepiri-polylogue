@@ -20,7 +20,7 @@ def polylogue_root(cwd: Path | None = None) -> Path:
     if env:
         return Path(env).expanduser().resolve()
 
-    base = (cwd or Path.cwd()).resolve()
+    base = (Path(cwd) if cwd else Path.cwd()).resolve()
 
     if os.environ.get("POLYLOGUE_LEGACY_SIDECAR", "").strip() in ("1", "true", "yes"):
         return base / ".deepiri" / "polylogue"
