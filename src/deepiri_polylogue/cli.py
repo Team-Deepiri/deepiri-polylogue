@@ -16,7 +16,7 @@ from .participants import load_participants, touch_participant, upsert_participa
 from .paths import polylogue_root
 from .platform_detect import data_dir, detect_platform
 from .service_client import health, is_running
-from .service_config import pid_path, service_url
+from .service_config import bridge_url, pid_path, service_url
 from .service_daemon import PolylogueService
 from .service_install import install_service, uninstall_service
 from .store import init_session, load_meta
@@ -45,6 +45,25 @@ def main(argv: list[str] | None = None) -> int:
     svc_start.add_argument("--foreground", action="store_true", help="Run in foreground (debug)")
     svc_sub.add_parser("stop", help="Stop foreground service (SIGTERM pid file)")
     svc_sub.add_parser("status", help="Service health + data dir")
+
+    s_bridge = sub.add_parser("bridge", help="Real-time WebSocket chat bridge between LLM surfaces")
+    br_sub = s_bridge.add_subparsers(dest="bridge_cmd", required=True)
+    br_connect = br_sub.add_parser("connect", help="Live connection; incoming messages as JSON lines on stdout")
+    br_connect.add_argument("--room", required=True, help="Bridge room (e.g. lydlr-multimodal)")
+    br_connect.add_argument("--id", required=True, dest="participant_id", help="Your participant id")
+    br_connect.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read stdin lines and send as bridge messages (duplex)",
+    )
+    br_connect.add_argument("--url", default=None, help="Override bridge URL (default ws://127.0.0.1:7850)")
+    br_send = br_sub.add_parser("send", help="Send one message through the live bridge")
+    br_send.add_argument("--room", required=True)
+    br_send.add_argument("--id", required=True, dest="participant_id")
+    br_send.add_argument("--text", required=True)
+    br_send.add_argument("--to", default=None, help="Target participant id (omit to broadcast)")
+    br_send.add_argument("--url", default=None)
+    br_sub.add_parser("status", help="Bridge room + connection stats")
 
     s_join = sub.add_parser("join", help="Register or update a participant id")
     s_join.add_argument("--id", required=True, help="Stable id for this LLM surface (e.g. gpt-cursor-1)")
@@ -197,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "service":
             return _cmd_service(args)
 
+        if args.cmd == "bridge":
+            return _cmd_bridge(args)
+
         load_meta(root)
         ws.workspace_init(root)
 
@@ -325,6 +347,39 @@ def main(argv: list[str] | None = None) -> int:
     return 1
 
 
+def _cmd_bridge(args: argparse.Namespace) -> int:
+    from .bridge.client import bridge_status, connect_loop, send_message
+
+    if args.bridge_cmd == "connect":
+
+        def on_message(data: dict) -> None:
+            print(json.dumps(data, ensure_ascii=False), flush=True)
+
+        try:
+            connect_loop(
+                args.room,
+                args.participant_id,
+                on_message,
+                url=args.url,
+                stdin=args.stdin,
+            )
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    if args.bridge_cmd == "send":
+        send_message(args.room, args.participant_id, args.text, to=args.to, url=args.url)
+        return 0
+    if args.bridge_cmd == "status":
+        out = bridge_status()
+        if is_running():
+            h = health()
+            if h and h.get("bridge"):
+                out = h["bridge"]
+        print(json.dumps(out, indent=2))
+        return 0
+    return 1
+
+
 def _cmd_service(args: argparse.Namespace) -> int:
     if args.service_cmd == "install":
         result = install_service()
@@ -343,6 +398,7 @@ def _cmd_service(args: argparse.Namespace) -> int:
             return 0
         svc.start(foreground=False)
         print(f"Polylogue service started at {service_url()}", file=sys.stderr)
+        print(f"Chat bridge: {bridge_url()}/ws", file=sys.stderr)
         return 0
     if args.service_cmd == "stop":
         if pid_path().is_file():
@@ -360,6 +416,7 @@ def _cmd_service(args: argparse.Namespace) -> int:
         out = {
             "running": running,
             "url": service_url(),
+            "bridge_url": bridge_url(),
             "data_dir": data_dir(),
             "platform": detect_platform(),
             "health": health(),
