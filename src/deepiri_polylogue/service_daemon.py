@@ -41,6 +41,19 @@ class PolylogueHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8"))
 
+    def _validated_cwd(self, raw_cwd: str) -> Path | None:
+        base = Path.cwd().resolve()
+        candidate = Path(raw_cwd).expanduser()
+        if not candidate.is_absolute():
+            candidate = (base / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        try:
+            candidate.relative_to(base)
+        except ValueError:
+            return None
+        return candidate
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/health":
@@ -49,11 +62,14 @@ class PolylogueHandler(BaseHTTPRequestHandler):
         if parsed.path == "/resolve":
             qs = parse_qs(parsed.query)
             cwd_list = qs.get("cwd", [str(Path.cwd())])
-            cwd = Path(cwd_list[0])
+            cwd = self._validated_cwd(cwd_list[0])
+            if cwd is None:
+                self._send_json(400, {"error": "invalid cwd"})
+                return
             entry = reg.lookup_workspace(cwd)
             root = reg.resolve_session_root(cwd)
             if not entry or not root:
-                self._send_json(404, {"error": "workspace not registered", "cwd": str(cwd.resolve())})
+                self._send_json(404, {"error": "workspace not registered", "cwd": str(cwd)})
                 return
             self._send_json(200, {**entry, "session_root": str(root)})
             return
