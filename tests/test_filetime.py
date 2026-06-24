@@ -10,7 +10,7 @@ from deepiri_polylogue.store import init_session
 
 def test_record_and_detect_stale(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "ft")
+    init_session(root, "ft", use_service=False)
     repo = tmp_path / "repo"
     repo.mkdir()
     target = repo / "a.py"
@@ -30,7 +30,7 @@ def test_record_and_detect_stale(tmp_path: Path) -> None:
 
 def test_assert_fresh_requires_read(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "ft")
+    init_session(root, "ft", use_service=False)
     repo = tmp_path / "repo"
     repo.mkdir()
     target = repo / "b.py"
@@ -45,7 +45,7 @@ def test_assert_fresh_requires_read(tmp_path: Path) -> None:
 
 def test_assert_fresh_detects_external_edit(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "ft")
+    init_session(root, "ft", use_service=False)
     repo = tmp_path / "repo"
     repo.mkdir()
     target = repo / "c.py"
@@ -61,7 +61,7 @@ def test_assert_fresh_detects_external_edit(tmp_path: Path) -> None:
 
 def test_sync_pack_includes_stale_section(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "ft")
+    init_session(root, "ft", use_service=False)
     repo = tmp_path / "repo"
     repo.mkdir()
     target = repo / "d.py"

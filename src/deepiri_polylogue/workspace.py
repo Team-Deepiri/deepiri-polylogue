@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .models import utc_now_iso
-from .paths import ensure_dir
+from .fsutil import ensure_dir
 
 ActorKind = Literal["participant", "subagent"]
 ActorState = Literal["idle", "reading", "editing"]

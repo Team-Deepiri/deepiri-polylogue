@@ -4,6 +4,7 @@ from deepiri_polylogue.cli import main
 
 
 def test_cli_happy_path(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("POLYLOGUE_LEGACY_SIDECAR", "1")
     monkeypatch.chdir(tmp_path)
     assert main(["init", "--session", "cli-smoke"]) == 0
     assert main(["join", "--id", "p1", "--label", "One", "--provider", "test"]) == 0

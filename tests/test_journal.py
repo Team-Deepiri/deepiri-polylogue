@@ -11,7 +11,7 @@ from deepiri_polylogue.pack import render_sync_pack
 
 def test_append_and_tail(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "test")
+    init_session(root, "test", use_service=False)
     for i in range(5):
         append_event(root, event_line(type="utterance", participant_id="a", role="assistant", text=f"m{i}"))
     tail = tail_events(root, lines=3)
@@ -21,7 +21,7 @@ def test_append_and_tail(tmp_path: Path) -> None:
 
 def test_tail_clamps_non_positive_lines(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "t")
+    init_session(root, "t", use_service=False)
     for i in range(3):
         append_event(root, event_line(type="utterance", participant_id="a", role="assistant", text=str(i)))
     assert len(tail_events(root, lines=0)) == 1
@@ -30,7 +30,7 @@ def test_tail_clamps_non_positive_lines(tmp_path: Path) -> None:
 
 def test_sync_pack_renders(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "demo")
+    init_session(root, "demo", use_service=False)
     upsert_participant(root, Participant(id="x", label="Claude tab", provider="anthropic"))
     append_event(root, event_line(type="utterance", participant_id="x", role="assistant", text="hello"))
     md = render_sync_pack(root, lines=10)
