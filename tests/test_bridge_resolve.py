@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
-from pathlib import Path
 from unittest.mock import patch
 
 from deepiri_polylogue.bridge.resolve import detect_provider, find_repo_root, resolve_bridge_context

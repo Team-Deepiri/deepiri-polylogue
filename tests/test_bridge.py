@@ -9,7 +9,6 @@ import time
 import pytest
 import websockets
 
-from deepiri_polylogue.bridge.client import send_message
 from deepiri_polylogue.bridge.server import BridgeServer
 
 
