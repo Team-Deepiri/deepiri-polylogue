@@ -40,8 +40,11 @@ class BridgeServer:
         }
 
     async def _connection(self, websocket: Any) -> None:
-        request = websocket.request
-        parsed = urlparse(request.path)
+        if hasattr(websocket, "request"):
+            path = websocket.request.path
+        else:
+            path = websocket.path
+        parsed = urlparse(path)
         if parsed.path != "/ws":
             await websocket.close(code=4404, reason="use /ws")
             return

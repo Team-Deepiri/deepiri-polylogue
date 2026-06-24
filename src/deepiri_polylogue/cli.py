@@ -80,6 +80,36 @@ def main(argv: list[str] | None = None) -> int:
     br_whoami.add_argument("--id", dest="participant_id", default=None)
     br_sub.add_parser("status", help="Bridge room + connection stats")
 
+    s_delegate = sub.add_parser(
+        "delegate",
+        help="Signed cross-agent task delegation (any surface → any surface)",
+    )
+    del_sub = s_delegate.add_subparsers(dest="delegate_cmd", required=True)
+    del_init = del_sub.add_parser("init", help="Create local signing key + delegate user identity")
+    del_init.add_argument("--user", default=None, help="On-behalf-of name (default: $USER)")
+    del_submit = del_sub.add_parser("submit", help="Sign and send a delegated task to a peer agent")
+    del_submit.add_argument("--text", required=True, help="Task prompt for the target agent")
+    del_submit.add_argument("--to", default=None, help="Target participant id (auto if one peer)")
+    del_submit.add_argument("--cwd", type=Path, default=None)
+    del_submit.add_argument("--room", default=None)
+    del_submit.add_argument("--id", dest="participant_id", default=None)
+    del_submit.add_argument("--url", default=None)
+    del_watch = del_sub.add_parser("watch", help="Listen for delegated tasks and inject into local runtime")
+    del_watch.add_argument("--cwd", type=Path, default=None)
+    del_watch.add_argument("--room", default=None)
+    del_watch.add_argument("--id", dest="participant_id", default=None)
+    del_watch.add_argument("--url", default=None)
+    del_watch.add_argument(
+        "--runtime",
+        default=None,
+        choices=["opencode", "cursor", "claude", "inbox"],
+        help="Force injection runtime (default: auto-detect)",
+    )
+    del_inbox = del_sub.add_parser("inbox", help="Print pending delegate inbox lines for this participant")
+    del_inbox.add_argument("--cwd", type=Path, default=None)
+    del_inbox.add_argument("--id", dest="participant_id", default=None)
+    del_inbox.add_argument("--lines", type=int, default=20)
+
     s_join = sub.add_parser("join", help="Register or update a participant id")
     s_join.add_argument("--id", required=True, help="Stable id for this LLM surface (e.g. gpt-cursor-1)")
     s_join.add_argument("--label", required=True, help="Human-readable label")
@@ -234,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "bridge":
             return _cmd_bridge(args)
 
+        if args.cmd == "delegate":
+            return _cmd_delegate(args)
+
         load_meta(root)
         ws.workspace_init(root)
 
@@ -358,6 +391,78 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # pragma: no cover
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+    return 1
+
+
+def _cmd_delegate(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .bridge.client import send_delegate
+    from .bridge.delegate import build_delegate, encode_delegate_wire, inbox_path, init_delegate_identity
+    from .bridge.executor import delegate_watch_loop
+    from .bridge.resolve import resolve_bridge_context, resolve_send_target
+
+    cwd = getattr(args, "cwd", None) or Path.cwd()
+
+    if args.delegate_cmd == "init":
+        out = init_delegate_identity(user=getattr(args, "user", None))
+        print(json.dumps(out, indent=2))
+        return 0
+
+    if args.delegate_cmd == "inbox":
+        ctx = resolve_bridge_context(cwd, participant_id=getattr(args, "participant_id", None))
+        path = inbox_path(ctx.participant_id)
+        if not path.is_file():
+            return 0
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines[-args.lines :]:
+            if line.strip():
+                print(line)
+        return 0
+
+    if args.delegate_cmd == "watch":
+        try:
+            delegate_watch_loop(
+                cwd,
+                participant_id=getattr(args, "participant_id", None),
+                room=getattr(args, "room", None),
+                url=getattr(args, "url", None),
+                runtime=getattr(args, "runtime", None),
+            )
+        except KeyboardInterrupt:
+            return 0
+        return 0
+
+    if args.delegate_cmd == "submit":
+        ctx = resolve_bridge_context(
+            cwd,
+            participant_id=getattr(args, "participant_id", None),
+            room=getattr(args, "room", None),
+        )
+        target = resolve_send_target(ctx, explicit_to=getattr(args, "to", None), broadcast=False)
+        if not target:
+            print(
+                "Could not resolve delegate target — use --to or ensure one peer is connected.",
+                file=sys.stderr,
+            )
+            return 1
+        req = build_delegate(
+            room=ctx.room,
+            sender=ctx.participant_id,
+            target=target,
+            prompt=args.text,
+            cwd=str(ctx.repo_root),
+            sender_provider=ctx.provider,
+        )
+        send_delegate(
+            ctx.room,
+            ctx.participant_id,
+            req.to_wire(),
+            url=getattr(args, "url", None),
+        )
+        print(encode_delegate_wire(req))
+        return 0
 
     return 1
 

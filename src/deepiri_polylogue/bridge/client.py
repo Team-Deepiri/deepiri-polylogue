@@ -41,6 +41,25 @@ def _run_sync(coro: Any) -> None:
         raise error[0]
 
 
+async def _send_payload_async(
+    room: str,
+    participant_id: str,
+    payload: dict[str, Any],
+    *,
+    url: str | None = None,
+) -> None:
+    import websockets
+
+    base = (url or bridge_url()).rstrip("/")
+    uri = f"{base}/ws?room={quote(room)}&id={quote(participant_id)}"
+    async with websockets.connect(uri) as ws:
+        await ws.send(encode(payload))
+        try:
+            await asyncio.wait_for(ws.recv(), timeout=1.0)
+        except (TimeoutError, Exception):
+            pass
+
+
 async def _send_async(
     room: str,
     participant_id: str,
@@ -49,19 +68,10 @@ async def _send_async(
     to: str | None = None,
     url: str | None = None,
 ) -> None:
-    import websockets
-
-    base = (url or bridge_url()).rstrip("/")
-    uri = f"{base}/ws?room={quote(room)}&id={quote(participant_id)}"
     payload: dict[str, Any] = {"type": "message", "text": text}
     if to:
         payload["to"] = to
-    async with websockets.connect(uri) as ws:
-        await ws.send(encode(payload))
-        try:
-            await asyncio.wait_for(ws.recv(), timeout=1.0)
-        except TimeoutError:
-            pass
+    await _send_payload_async(room, participant_id, payload, url=url)
 
 
 def send_message(
@@ -84,6 +94,25 @@ def send_message(
             queue_message(participant_id, payload)
             return
     _run_sync(_send_async(room, participant_id, text, to=to, url=url))
+
+
+def send_delegate(
+    room: str,
+    participant_id: str,
+    payload: dict[str, Any],
+    *,
+    url: str | None = None,
+    prefer_outbox: bool = True,
+) -> None:
+    wire = {**payload, "type": "delegate"}
+    if prefer_outbox:
+        from .listener import queue_message, state_paths
+
+        _, outbox = state_paths(participant_id)
+        if outbox.exists():
+            queue_message(participant_id, wire)
+            return
+    _run_sync(_send_payload_async(room, participant_id, wire, url=url))
 
 
 async def _connect_async(
