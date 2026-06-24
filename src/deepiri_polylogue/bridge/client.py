@@ -71,7 +71,18 @@ def send_message(
     *,
     to: str | None = None,
     url: str | None = None,
+    prefer_outbox: bool = True,
 ) -> None:
+    payload: dict[str, Any] = {"type": "message", "text": text}
+    if to:
+        payload["to"] = to
+    if prefer_outbox:
+        from .listener import queue_message, state_paths
+
+        _, outbox = state_paths(participant_id)
+        if outbox.exists():
+            queue_message(participant_id, payload)
+            return
     _run_sync(_send_async(room, participant_id, text, to=to, url=url))
 
 

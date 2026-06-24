@@ -14,16 +14,37 @@ Design goals: provider-agnostic storage, human-auditable JSONL, agent-friendly c
 
 ## Installation
 
-From a clone of this repository:
+One-shot install (puts `deepiri-polylogue` on `~/.local/bin` and starts the service):
+
+```bash
+git clone https://github.com/Team-Deepiri/deepiri-polylogue.git
+cd deepiri-polylogue
+./install.sh
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc if needed
+```
+
+Manual / development install:
 
 ```bash
 cd deepiri-polylogue
 python3 -m venv .venv && source .venv/bin/activate
 python3 -m pip install -e ".[dev]" 2>/dev/null || python3 -m pip install -e .
-python3 -m pip install pytest  # only if the optional `dev` extra was not installed
 ```
 
-The primary CLI entry point is **`polylogue`**. You can also run `python3 -m deepiri_polylogue` or `python3 -m polylogue` for equivalent behavior.
+CLI entry points: **`deepiri-polylogue`** (journal + service + bridge) and **`polylogue`** (Redis orchestration package).
+
+### Real-time bridge (v0.3+)
+
+After `./install.sh`, from any git repo — no env vars, auto-detects room + participant:
+
+```bash
+deepiri-polylogue --cwd /path/to/repo init --session myproject
+deepiri-polylogue --cwd /path/to/repo bridge listen    # persistent agent connection
+deepiri-polylogue --cwd /path/to/repo bridge send --text "ping"
+deepiri-polylogue --cwd /path/to/repo bridge whoami
+```
+
+Service listens on HTTP `7849` and WebSocket bridge `7850`.
 
 ## Quick start
 

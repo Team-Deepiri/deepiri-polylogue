@@ -49,20 +49,35 @@ def main(argv: list[str] | None = None) -> int:
     s_bridge = sub.add_parser("bridge", help="Real-time WebSocket chat bridge between LLM surfaces")
     br_sub = s_bridge.add_subparsers(dest="bridge_cmd", required=True)
     br_connect = br_sub.add_parser("connect", help="Live connection; incoming messages as JSON lines on stdout")
-    br_connect.add_argument("--room", required=True, help="Bridge room (e.g. lydlr-multimodal)")
-    br_connect.add_argument("--id", required=True, dest="participant_id", help="Your participant id")
+    br_connect.add_argument("--room", default=None, help="Bridge room (auto from repo registry if omitted)")
+    br_connect.add_argument("--id", dest="participant_id", default=None, help="Participant id (auto from runtime)")
+    br_connect.add_argument("--cwd", type=Path, default=None, help="Git repo root for auto-resolve")
     br_connect.add_argument(
         "--stdin",
         action="store_true",
         help="Read stdin lines and send as bridge messages (duplex)",
     )
     br_connect.add_argument("--url", default=None, help="Override bridge URL (default ws://127.0.0.1:7850)")
+    br_listen = br_sub.add_parser(
+        "listen",
+        help="Persistent bridge listener with outbox (for agents; survives send without reconnect)",
+    )
+    br_listen.add_argument("--room", default=None)
+    br_listen.add_argument("--id", dest="participant_id", default=None)
+    br_listen.add_argument("--cwd", type=Path, default=None)
+    br_listen.add_argument("--url", default=None)
     br_send = br_sub.add_parser("send", help="Send one message through the live bridge")
-    br_send.add_argument("--room", required=True)
-    br_send.add_argument("--id", required=True, dest="participant_id")
+    br_send.add_argument("--room", default=None)
+    br_send.add_argument("--id", dest="participant_id", default=None)
+    br_send.add_argument("--cwd", type=Path, default=None)
     br_send.add_argument("--text", required=True)
-    br_send.add_argument("--to", default=None, help="Target participant id (omit to broadcast)")
+    br_send.add_argument("--to", default=None, help="Target participant id (auto if one peer)")
+    br_send.add_argument("--broadcast", action="store_true")
     br_send.add_argument("--url", default=None)
+    br_whoami = br_sub.add_parser("whoami", help="Print auto-resolved bridge room + participant id")
+    br_whoami.add_argument("--cwd", type=Path, default=None)
+    br_whoami.add_argument("--room", default=None)
+    br_whoami.add_argument("--id", dest="participant_id", default=None)
     br_sub.add_parser("status", help="Bridge room + connection stats")
 
     s_join = sub.add_parser("join", help="Register or update a participant id")
@@ -348,17 +363,45 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _cmd_bridge(args: argparse.Namespace) -> int:
-    from .bridge.client import bridge_status, connect_loop, send_message
+    from pathlib import Path
 
+    from .bridge.client import bridge_status, connect_loop, send_message
+    from .bridge.listener import listen_loop
+    from .bridge.resolve import resolve_bridge_context, resolve_send_target
+
+    cwd = getattr(args, "cwd", None)
+
+    def _ctx():
+        return resolve_bridge_context(
+            cwd or Path.cwd(),
+            participant_id=getattr(args, "participant_id", None),
+            room=getattr(args, "room", None),
+        )
+
+    if args.bridge_cmd == "whoami":
+        print(json.dumps(_ctx().to_json(), indent=2))
+        return 0
+    if args.bridge_cmd == "listen":
+        try:
+            listen_loop(
+                cwd or Path.cwd(),
+                participant_id=getattr(args, "participant_id", None),
+                room=getattr(args, "room", None),
+                url=getattr(args, "url", None),
+            )
+        except KeyboardInterrupt:
+            return 0
+        return 0
     if args.bridge_cmd == "connect":
+        ctx = _ctx()
 
         def on_message(data: dict) -> None:
             print(json.dumps(data, ensure_ascii=False), flush=True)
 
         try:
             connect_loop(
-                args.room,
-                args.participant_id,
+                ctx.room,
+                ctx.participant_id,
                 on_message,
                 url=args.url,
                 stdin=args.stdin,
@@ -367,7 +410,19 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
             return 0
         return 0
     if args.bridge_cmd == "send":
-        send_message(args.room, args.participant_id, args.text, to=args.to, url=args.url)
+        ctx = _ctx()
+        target = resolve_send_target(
+            ctx,
+            explicit_to=getattr(args, "to", None),
+            broadcast=getattr(args, "broadcast", False),
+        )
+        send_message(
+            ctx.room,
+            ctx.participant_id,
+            args.text,
+            to=target,
+            url=args.url,
+        )
         return 0
     if args.bridge_cmd == "status":
         out = bridge_status()
