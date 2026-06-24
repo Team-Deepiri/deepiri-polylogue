@@ -50,7 +50,12 @@ def save_registry(doc: dict[str, Any]) -> None:
 
 def session_dir_for_name(session: str) -> Path:
     safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in session.strip())[:80] or "default"
-    p = sessions_root() / safe
+    root = sessions_root().resolve()
+    p = (root / safe).resolve()
+    try:
+        p.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("invalid session path") from exc
     ensure_dir(p)
     return p
 
