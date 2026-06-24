@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from . import __version__
 from . import filetime as ft
+from . import workspace as ws
 from .journal import append_event, journal_path, tail_events
 from .models import Participant, event_line, utc_now_iso
 from .pack import render_sync_pack
 from .participants import load_participants, touch_participant, upsert_participant
 from .paths import polylogue_root
+from .platform_detect import data_dir, detect_platform
+from .service_client import health, is_running
+from .service_config import pid_path, service_url
+from .service_daemon import PolylogueService
+from .service_install import install_service, uninstall_service
 from .store import init_session, load_meta
-from . import workspace as ws
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +31,20 @@ def main(argv: list[str] | None = None) -> int:
 
     s_init = sub.add_parser("init", help="Create session under .deepiri/polylogue/")
     s_init.add_argument("--session", default="default", help="Session name stored in meta.json")
+    s_init.add_argument(
+        "--legacy-sidecar",
+        action="store_true",
+        help="Create .deepiri/polylogue in repo (legacy) instead of global service storage",
+    )
+
+    s_service = sub.add_parser("service", help="Background coordination service (no repo sidecar)")
+    svc_sub = s_service.add_subparsers(dest="service_cmd", required=True)
+    svc_sub.add_parser("install", help="Install platform service (systemd/launchd/schtasks) + env hook")
+    svc_sub.add_parser("uninstall", help="Remove platform service")
+    svc_start = svc_sub.add_parser("start", help="Start service")
+    svc_start.add_argument("--foreground", action="store_true", help="Run in foreground (debug)")
+    svc_sub.add_parser("stop", help="Stop foreground service (SIGTERM pid file)")
+    svc_sub.add_parser("status", help="Service health + data dir")
 
     s_join = sub.add_parser("join", help="Register or update a participant id")
     s_join.add_argument("--id", required=True, help="Stable id for this LLM surface (e.g. gpt-cursor-1)")
@@ -155,9 +175,27 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.cmd == "init":
-            init_session(root, args.session)
-            print(f"Initialized polylogue at {root}", file=sys.stderr)
+            cwd = (args.cwd or Path.cwd()).resolve()
+            legacy = args.legacy_sidecar or os.environ.get("POLYLOGUE_LEGACY_SIDECAR", "").strip() in (
+                "1",
+                "true",
+                "yes",
+            )
+            sidecar_root = cwd / ".deepiri" / "polylogue"
+            resolved = init_session(
+                sidecar_root if legacy else Path("."),
+                args.session,
+                workspace=cwd,
+                use_service=not legacy,
+            )
+            print(f"Initialized polylogue at {resolved}", file=sys.stderr)
+            if not legacy:
+                print("Service mode: no .deepiri/ sidecar in repo.", file=sys.stderr)
+                print(f"Global data: {data_dir()}", file=sys.stderr)
             return 0
+
+        if args.cmd == "service":
+            return _cmd_service(args)
 
         load_meta(root)
         ws.workspace_init(root)
@@ -284,6 +322,51 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
+    return 1
+
+
+def _cmd_service(args: argparse.Namespace) -> int:
+    if args.service_cmd == "install":
+        result = install_service()
+        print(json.dumps(result, indent=2))
+        print(f"Platform: {detect_platform()}", file=sys.stderr)
+        print(f"Service URL: {service_url()}", file=sys.stderr)
+        return 0
+    if args.service_cmd == "uninstall":
+        uninstall_service()
+        print("Polylogue service uninstalled.", file=sys.stderr)
+        return 0
+    if args.service_cmd == "start":
+        svc = PolylogueService()
+        if args.foreground:
+            svc.start(foreground=True)
+            return 0
+        svc.start(foreground=False)
+        print(f"Polylogue service started at {service_url()}", file=sys.stderr)
+        return 0
+    if args.service_cmd == "stop":
+        if pid_path().is_file():
+            import signal
+
+            pid = int(pid_path().read_text(encoding="utf-8").strip())
+            os.kill(pid, signal.SIGTERM)
+            pid_path().unlink(missing_ok=True)
+            print("Stopped.", file=sys.stderr)
+            return 0
+        print("No pid file — service not running?", file=sys.stderr)
+        return 1
+    if args.service_cmd == "status":
+        running = is_running()
+        out = {
+            "running": running,
+            "url": service_url(),
+            "data_dir": data_dir(),
+            "platform": detect_platform(),
+            "health": health(),
+            "pid_file": str(pid_path()) if pid_path().is_file() else None,
+        }
+        print(json.dumps(out, indent=2))
+        return 0
     return 1
 
 

@@ -27,17 +27,39 @@ The primary CLI entry point is **`polylogue`**. You can also run `python3 -m dee
 
 ## Quick start
 
+### Service mode (recommended — no repo sidecar)
+
+Sessions live in your user data directory; repos stay clean.
+
 ```bash
-polylogue init --session my-mission
-polylogue join --id win-a --label "ChatGPT tab" --provider openai
-polylogue sync-pack   # paste into each surface's context
-polylogue say --id win-a --role assistant --text "Explored design; proposing JSONL journal."
+deepiri-polylogue service install          # systemd (Linux/WSL), launchd (macOS), or schtasks (Windows)
+deepiri-polylogue init --session my-mission   # registers cwd in global registry — no .deepiri/ in repo
+deepiri-polylogue join --id win-a --label "ChatGPT tab" --provider openai
+deepiri-polylogue sync-pack
 ```
 
-Override the storage root (default is under the current working directory):
+Data directory by platform:
+
+| Platform | Location |
+|----------|----------|
+| Linux / WSL | `~/.local/share/deepiri-polylogue/` |
+| macOS | `~/Library/Application Support/deepiri-polylogue/` |
+| Windows | `%LOCALAPPDATA%\deepiri-polylogue\` |
+
+### Legacy sidecar mode
 
 ```bash
-export DEEPIRI_POLYLOGUE_ROOT=/path/to/shared/polylogue
+deepiri-polylogue init --session my-mission --legacy-sidecar
+# creates .deepiri/polylogue/ in the current repo (gitignore this)
+```
+
+### Filesystem-only quick start
+
+Default root: user data dir via background service (see **Service mode** above). Override:
+
+```bash
+export DEEPIRI_POLYLOGUE_ROOT=/path/to/shared/polylogue   # explicit override
+export POLYLOGUE_LEGACY_SIDECAR=1                         # force repo .deepiri/ sidecar
 polylogue status
 ```
 
@@ -53,7 +75,19 @@ polylogue status
 | **Scratch** (`scratch/<participant-id>/`) | Per-surface transient files (`scratch-write` writes stdin atomically into this tree). |
 | **Sync pack** | `polylogue sync-pack` combines journal tail, roster, presence, context and memory tails, and scratch listings into one block for injection into prompts or first messages. |
 
-All of the above live under `.deepiri/polylogue/` by default (or under `DEEPIRI_POLYLOGUE_ROOT`).
+All of the above live under the user data directory in service mode, or under `.deepiri/polylogue/` in legacy mode.
+
+## Service commands
+
+```bash
+deepiri-polylogue service install     # platform auto-detect: linux | wsl | macos | windows
+deepiri-polylogue service status
+deepiri-polylogue service start --foreground   # debug
+deepiri-polylogue service stop
+deepiri-polylogue service uninstall
+```
+
+The service exposes `http://127.0.0.1:7849` with `/health`, `/resolve?cwd=...`, `/register`, `/registry`.
 
 ## Workspace workflow
 
