@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepiri-polylogue"
-version = "0.3.1"
+version = "0.3.2"
 description = "Filesystem-first shared journal so many LLM surfaces stay mutually aware (Deepiri)."
 readme = "README.md"
 requires-python = ">=3.10"

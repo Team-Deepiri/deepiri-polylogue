@@ -57,7 +57,7 @@ async def _outbox_reader(ws: websockets.WebSocketClientProtocol, outbox: Path, l
             except json.JSONDecodeError:
                 _log(log_path, f"outbox skip bad json: {line[:80]}")
                 continue
-            if payload.get("type") != "message":
+            if payload.get("type") not in ("message", "delegate"):
                 payload = {"type": "message", "text": str(payload.get("text", line))}
             await ws.send(encode(payload))
             _log(log_path, f"sent: {json.dumps(payload, ensure_ascii=False)}")

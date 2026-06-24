@@ -55,6 +55,25 @@ class RoomHub:
         if msg_type == "ping":
             await self._send_to(room, sender_id, envelope("pong", room=room, sender="bridge"))
             return
+        if msg_type == "delegate":
+            target = data.get("to")
+            prompt = str(data.get("prompt", "")).strip()
+            if not target or not prompt:
+                return
+            outbound = {**data, "type": "delegate", "room": room, "from": sender_id}
+            await self._send_to(room, str(target), outbound)
+            await self._send_to(
+                room,
+                sender_id,
+                envelope(
+                    "ack",
+                    room=room,
+                    sender="bridge",
+                    delivered_to=target,
+                    delegate_id=data.get("delegate_id"),
+                ),
+            )
+            return
         if msg_type != "message":
             return
         text = str(data.get("text", ""))
