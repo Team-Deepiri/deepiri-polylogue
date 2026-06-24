@@ -13,15 +13,16 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import registry as reg
+from .bridge.server import BridgeServer, get_active_bridge
 from .platform_detect import data_dir
 from .fsutil import ensure_dir
-from .service_config import pid_path, service_host, service_port
+from .service_config import bridge_url, pid_path, service_host, service_port
 
 logger = logging.getLogger(__name__)
 
 
 class PolylogueHandler(BaseHTTPRequestHandler):
-    server_version = "deepiri-polylogue/0.2"
+    server_version = "deepiri-polylogue/0.3"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)
@@ -57,7 +58,11 @@ class PolylogueHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/health":
-            self._send_json(200, {"ok": True, "data_dir": data_dir()})
+            bridge = get_active_bridge()
+            payload: dict[str, Any] = {"ok": True, "data_dir": data_dir(), "bridge_url": bridge_url()}
+            if bridge is not None:
+                payload["bridge"] = bridge.status()
+            self._send_json(200, payload)
             return
         if parsed.path == "/resolve":
             qs = parse_qs(parsed.query)
@@ -96,12 +101,16 @@ class PolylogueService:
         self.port = port or service_port()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._bridge: BridgeServer | None = None
 
     def start(self, *, foreground: bool = False) -> None:
         ensure_dir(Path(data_dir()))
+        self._bridge = BridgeServer()
+        self._bridge.start(foreground=False)
         self._httpd = ThreadingHTTPServer((self.host, self.port), PolylogueHandler)
         pid_path().write_text(str(os.getpid()), encoding="utf-8")
         logger.info("Polylogue service listening on %s:%s (data: %s)", self.host, self.port, data_dir())
+        logger.info("Chat bridge at %s/ws", bridge_url())
         if foreground:
             self._install_signal_handlers()
             self._httpd.serve_forever()
@@ -110,6 +119,9 @@ class PolylogueService:
             self._thread.start()
 
     def stop(self) -> None:
+        if self._bridge:
+            self._bridge.stop()
+            self._bridge = None
         if self._httpd:
             self._httpd.shutdown()
             self._httpd.server_close()
