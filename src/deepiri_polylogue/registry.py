@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,16 @@ def sessions_root() -> Path:
     return p
 
 
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def _validated_session_name(session: str) -> str:
+    candidate = session.strip() or "default"
+    if not _SESSION_NAME_RE.fullmatch(candidate):
+        raise ValueError("invalid session name")
+    return candidate
+
+
 def _normalize_repo(cwd: Path) -> str:
     return str(cwd.expanduser().resolve())
 
@@ -49,7 +60,7 @@ def save_registry(doc: dict[str, Any]) -> None:
 
 
 def session_dir_for_name(session: str) -> Path:
-    safe = "".join(c if c.isalnum() or c in "-_" else "-" for c in session.strip())[:80] or "default"
+    safe = _validated_session_name(session)
     root = sessions_root().resolve()
     p = (root / safe).resolve()
     try:
