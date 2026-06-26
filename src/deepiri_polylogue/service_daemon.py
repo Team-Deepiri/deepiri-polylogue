@@ -45,11 +45,15 @@ class PolylogueHandler(BaseHTTPRequestHandler):
 
     def _validated_cwd(self, raw_cwd: str) -> Path | None:
         base = Path.cwd().resolve()
-        candidate = Path(raw_cwd).expanduser()
-        if not candidate.is_absolute():
-            candidate = (base / candidate).resolve()
-        else:
-            candidate = candidate.resolve()
+        if not raw_cwd or "\x00" in raw_cwd:
+            return None
+        if raw_cwd.startswith("~"):
+            return None
+        if os.path.isabs(raw_cwd):
+            return None
+
+        normalized = os.path.normpath(raw_cwd)
+        candidate = (base / normalized).resolve()
         try:
             candidate.relative_to(base)
         except ValueError:
