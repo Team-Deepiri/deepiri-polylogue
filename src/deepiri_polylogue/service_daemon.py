@@ -10,6 +10,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -102,11 +103,13 @@ class PolylogueHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/register":
             body = self._read_json()
-            cwd = self._validated_cwd(str(body.get("cwd", str(Path.cwd()))))
+            cwd_raw = str(body.get("cwd", str(Path.cwd())))
+            cwd = self._validated_cwd(cwd_raw)
             if cwd is None:
                 self._send_json(400, {"error": "invalid cwd"})
                 return
-            session = self._validated_session(body.get("session", "default"))
+            session_raw = str(body.get("session", "default"))
+            session = self._validated_session(session_raw)
             if session is None:
                 self._send_json(400, {"error": "invalid session"})
                 return
