@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from . import __version__
 from . import filetime as ft
+from . import workspace as ws
 from .journal import append_event, journal_path, tail_events
 from .models import Participant, event_line, utc_now_iso
 from .pack import render_sync_pack
 from .participants import load_participants, touch_participant, upsert_participant
 from .paths import polylogue_root
+from .platform_detect import data_dir, detect_platform
+from .service_client import health, is_running
+from .service_config import bridge_url, pid_path, service_url
+from .service_daemon import PolylogueService
+from .service_install import install_service, uninstall_service
 from .store import init_session, load_meta
-from . import workspace as ws
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,6 +31,84 @@ def main(argv: list[str] | None = None) -> int:
 
     s_init = sub.add_parser("init", help="Create session under .deepiri/polylogue/")
     s_init.add_argument("--session", default="default", help="Session name stored in meta.json")
+    s_init.add_argument(
+        "--legacy-sidecar",
+        action="store_true",
+        help="Create .deepiri/polylogue in repo (legacy) instead of global service storage",
+    )
+
+    s_service = sub.add_parser("service", help="Background coordination service (no repo sidecar)")
+    svc_sub = s_service.add_subparsers(dest="service_cmd", required=True)
+    svc_sub.add_parser("install", help="Install platform service (systemd/launchd/schtasks) + env hook")
+    svc_sub.add_parser("uninstall", help="Remove platform service")
+    svc_start = svc_sub.add_parser("start", help="Start service")
+    svc_start.add_argument("--foreground", action="store_true", help="Run in foreground (debug)")
+    svc_sub.add_parser("stop", help="Stop foreground service (SIGTERM pid file)")
+    svc_sub.add_parser("status", help="Service health + data dir")
+
+    s_bridge = sub.add_parser("bridge", help="Real-time WebSocket chat bridge between LLM surfaces")
+    br_sub = s_bridge.add_subparsers(dest="bridge_cmd", required=True)
+    br_connect = br_sub.add_parser("connect", help="Live connection; incoming messages as JSON lines on stdout")
+    br_connect.add_argument("--room", default=None, help="Bridge room (auto from repo registry if omitted)")
+    br_connect.add_argument("--id", dest="participant_id", default=None, help="Participant id (auto from runtime)")
+    br_connect.add_argument("--cwd", type=Path, default=None, help="Git repo root for auto-resolve")
+    br_connect.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read stdin lines and send as bridge messages (duplex)",
+    )
+    br_connect.add_argument("--url", default=None, help="Override bridge URL (default ws://127.0.0.1:7850)")
+    br_listen = br_sub.add_parser(
+        "listen",
+        help="Persistent bridge listener with outbox (for agents; survives send without reconnect)",
+    )
+    br_listen.add_argument("--room", default=None)
+    br_listen.add_argument("--id", dest="participant_id", default=None)
+    br_listen.add_argument("--cwd", type=Path, default=None)
+    br_listen.add_argument("--url", default=None)
+    br_send = br_sub.add_parser("send", help="Send one message through the live bridge")
+    br_send.add_argument("--room", default=None)
+    br_send.add_argument("--id", dest="participant_id", default=None)
+    br_send.add_argument("--cwd", type=Path, default=None)
+    br_send.add_argument("--text", required=True)
+    br_send.add_argument("--to", default=None, help="Target participant id (auto if one peer)")
+    br_send.add_argument("--broadcast", action="store_true")
+    br_send.add_argument("--url", default=None)
+    br_whoami = br_sub.add_parser("whoami", help="Print auto-resolved bridge room + participant id")
+    br_whoami.add_argument("--cwd", type=Path, default=None)
+    br_whoami.add_argument("--room", default=None)
+    br_whoami.add_argument("--id", dest="participant_id", default=None)
+    br_sub.add_parser("status", help="Bridge room + connection stats")
+
+    s_delegate = sub.add_parser(
+        "delegate",
+        help="Signed cross-agent task delegation (any surface → any surface)",
+    )
+    del_sub = s_delegate.add_subparsers(dest="delegate_cmd", required=True)
+    del_init = del_sub.add_parser("init", help="Create local signing key + delegate user identity")
+    del_init.add_argument("--user", default=None, help="On-behalf-of name (default: $USER)")
+    del_submit = del_sub.add_parser("submit", help="Sign and send a delegated task to a peer agent")
+    del_submit.add_argument("--text", required=True, help="Task prompt for the target agent")
+    del_submit.add_argument("--to", default=None, help="Target participant id (auto if one peer)")
+    del_submit.add_argument("--cwd", type=Path, default=None)
+    del_submit.add_argument("--room", default=None)
+    del_submit.add_argument("--id", dest="participant_id", default=None)
+    del_submit.add_argument("--url", default=None)
+    del_watch = del_sub.add_parser("watch", help="Listen for delegated tasks and inject into local runtime")
+    del_watch.add_argument("--cwd", type=Path, default=None)
+    del_watch.add_argument("--room", default=None)
+    del_watch.add_argument("--id", dest="participant_id", default=None)
+    del_watch.add_argument("--url", default=None)
+    del_watch.add_argument(
+        "--runtime",
+        default=None,
+        choices=["opencode", "cursor", "claude", "inbox"],
+        help="Force injection runtime (default: auto-detect)",
+    )
+    del_inbox = del_sub.add_parser("inbox", help="Print pending delegate inbox lines for this participant")
+    del_inbox.add_argument("--cwd", type=Path, default=None)
+    del_inbox.add_argument("--id", dest="participant_id", default=None)
+    del_inbox.add_argument("--lines", type=int, default=20)
 
     s_join = sub.add_parser("join", help="Register or update a participant id")
     s_join.add_argument("--id", required=True, help="Stable id for this LLM surface (e.g. gpt-cursor-1)")
@@ -155,9 +239,33 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.cmd == "init":
-            init_session(root, args.session)
-            print(f"Initialized polylogue at {root}", file=sys.stderr)
+            cwd = (args.cwd or Path.cwd()).resolve()
+            legacy = args.legacy_sidecar or os.environ.get("POLYLOGUE_LEGACY_SIDECAR", "").strip() in (
+                "1",
+                "true",
+                "yes",
+            )
+            sidecar_root = cwd / ".deepiri" / "polylogue"
+            resolved = init_session(
+                sidecar_root if legacy else Path("."),
+                args.session,
+                workspace=cwd,
+                use_service=not legacy,
+            )
+            print(f"Initialized polylogue at {resolved}", file=sys.stderr)
+            if not legacy:
+                print("Service mode: no .deepiri/ sidecar in repo.", file=sys.stderr)
+                print(f"Global data: {data_dir()}", file=sys.stderr)
             return 0
+
+        if args.cmd == "service":
+            return _cmd_service(args)
+
+        if args.cmd == "bridge":
+            return _cmd_bridge(args)
+
+        if args.cmd == "delegate":
+            return _cmd_delegate(args)
 
         load_meta(root)
         ws.workspace_init(root)
@@ -284,6 +392,198 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
+    return 1
+
+
+def _cmd_delegate(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .bridge.client import send_delegate
+    from .bridge.delegate import build_delegate, encode_delegate_wire, inbox_path, init_delegate_identity
+    from .bridge.executor import delegate_watch_loop
+    from .bridge.resolve import resolve_bridge_context, resolve_send_target
+
+    cwd = getattr(args, "cwd", None) or Path.cwd()
+
+    if args.delegate_cmd == "init":
+        out = init_delegate_identity(user=getattr(args, "user", None))
+        print(json.dumps(out, indent=2))
+        return 0
+
+    if args.delegate_cmd == "inbox":
+        ctx = resolve_bridge_context(cwd, participant_id=getattr(args, "participant_id", None))
+        path = inbox_path(ctx.participant_id)
+        if not path.is_file():
+            return 0
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in lines[-args.lines :]:
+            if line.strip():
+                print(line)
+        return 0
+
+    if args.delegate_cmd == "watch":
+        try:
+            delegate_watch_loop(
+                cwd,
+                participant_id=getattr(args, "participant_id", None),
+                room=getattr(args, "room", None),
+                url=getattr(args, "url", None),
+                runtime=getattr(args, "runtime", None),
+            )
+        except KeyboardInterrupt:
+            return 0
+        return 0
+
+    if args.delegate_cmd == "submit":
+        ctx = resolve_bridge_context(
+            cwd,
+            participant_id=getattr(args, "participant_id", None),
+            room=getattr(args, "room", None),
+        )
+        target = resolve_send_target(ctx, explicit_to=getattr(args, "to", None), broadcast=False)
+        if not target:
+            print(
+                "Could not resolve delegate target — use --to or ensure one peer is connected.",
+                file=sys.stderr,
+            )
+            return 1
+        req = build_delegate(
+            room=ctx.room,
+            sender=ctx.participant_id,
+            target=target,
+            prompt=args.text,
+            cwd=str(ctx.repo_root),
+            sender_provider=ctx.provider,
+        )
+        send_delegate(
+            ctx.room,
+            ctx.participant_id,
+            req.to_wire(),
+            url=getattr(args, "url", None),
+        )
+        print(encode_delegate_wire(req))
+        return 0
+
+    return 1
+
+
+def _cmd_bridge(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .bridge.client import bridge_status, connect_loop, send_message
+    from .bridge.listener import listen_loop
+    from .bridge.resolve import resolve_bridge_context, resolve_send_target
+
+    cwd = getattr(args, "cwd", None)
+
+    def _ctx():
+        return resolve_bridge_context(
+            cwd or Path.cwd(),
+            participant_id=getattr(args, "participant_id", None),
+            room=getattr(args, "room", None),
+        )
+
+    if args.bridge_cmd == "whoami":
+        print(json.dumps(_ctx().to_json(), indent=2))
+        return 0
+    if args.bridge_cmd == "listen":
+        try:
+            listen_loop(
+                cwd or Path.cwd(),
+                participant_id=getattr(args, "participant_id", None),
+                room=getattr(args, "room", None),
+                url=getattr(args, "url", None),
+            )
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    if args.bridge_cmd == "connect":
+        ctx = _ctx()
+
+        def on_message(data: dict) -> None:
+            print(json.dumps(data, ensure_ascii=False), flush=True)
+
+        try:
+            connect_loop(
+                ctx.room,
+                ctx.participant_id,
+                on_message,
+                url=args.url,
+                stdin=args.stdin,
+            )
+        except KeyboardInterrupt:
+            return 0
+        return 0
+    if args.bridge_cmd == "send":
+        ctx = _ctx()
+        target = resolve_send_target(
+            ctx,
+            explicit_to=getattr(args, "to", None),
+            broadcast=getattr(args, "broadcast", False),
+        )
+        send_message(
+            ctx.room,
+            ctx.participant_id,
+            args.text,
+            to=target,
+            url=args.url,
+        )
+        return 0
+    if args.bridge_cmd == "status":
+        out = bridge_status()
+        if is_running():
+            h = health()
+            if h and h.get("bridge"):
+                out = h["bridge"]
+        print(json.dumps(out, indent=2))
+        return 0
+    return 1
+
+
+def _cmd_service(args: argparse.Namespace) -> int:
+    if args.service_cmd == "install":
+        result = install_service()
+        print(json.dumps(result, indent=2))
+        print(f"Platform: {detect_platform()}", file=sys.stderr)
+        print(f"Service URL: {service_url()}", file=sys.stderr)
+        return 0
+    if args.service_cmd == "uninstall":
+        uninstall_service()
+        print("Polylogue service uninstalled.", file=sys.stderr)
+        return 0
+    if args.service_cmd == "start":
+        svc = PolylogueService()
+        if args.foreground:
+            svc.start(foreground=True)
+            return 0
+        svc.start(foreground=False)
+        print(f"Polylogue service started at {service_url()}", file=sys.stderr)
+        print(f"Chat bridge: {bridge_url()}/ws", file=sys.stderr)
+        return 0
+    if args.service_cmd == "stop":
+        if pid_path().is_file():
+            import signal
+
+            pid = int(pid_path().read_text(encoding="utf-8").strip())
+            os.kill(pid, signal.SIGTERM)
+            pid_path().unlink(missing_ok=True)
+            print("Stopped.", file=sys.stderr)
+            return 0
+        print("No pid file — service not running?", file=sys.stderr)
+        return 1
+    if args.service_cmd == "status":
+        running = is_running()
+        out = {
+            "running": running,
+            "url": service_url(),
+            "bridge_url": bridge_url(),
+            "data_dir": data_dir(),
+            "platform": detect_platform(),
+            "health": health(),
+            "pid_file": str(pid_path()) if pid_path().is_file() else None,
+        }
+        print(json.dumps(out, indent=2))
+        return 0
     return 1
 
 

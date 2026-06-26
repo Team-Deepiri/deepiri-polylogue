@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepiri-polylogue"
-version = "0.1.0"
+version = "0.3.2"
 description = "Filesystem-first shared journal so many LLM surfaces stay mutually aware (Deepiri)."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = ["websockets>=12.0"]
 license = { text = "Apache-2.0" }
 authors = [{ name = "Deepiri" }]
 keywords = ["llm", "multi-agent", "sync", "deepiri", "journal"]
@@ -26,7 +27,7 @@ polylogue = "polylogue.__main__:main"
 deepiri-polylogue = "deepiri_polylogue.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "redis", "pyyaml"]
+dev = ["pytest>=7.4", "redis", "pyyaml", "websockets>=12.0"]
 redis = ["redis"]
 pyyaml = ["pyyaml"]
 

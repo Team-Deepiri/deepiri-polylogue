@@ -9,7 +9,7 @@ from deepiri_polylogue import workspace as ws
 
 def test_presence_roundtrip(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "w")
+    init_session(root, "w", use_service=False)
     ws.upsert_actor(
         root,
         actor_id="main",
@@ -40,7 +40,7 @@ def test_presence_roundtrip(tmp_path: Path) -> None:
 
 def test_sync_pack_includes_presence_and_shared(tmp_path: Path) -> None:
     root = tmp_path / "p"
-    init_session(root, "x")
+    init_session(root, "x", use_service=False)
     ws.atomic_write_text(ws.context_path(root), "# ctx\nhello shared\n")
     ws.upsert_actor(
         root,
