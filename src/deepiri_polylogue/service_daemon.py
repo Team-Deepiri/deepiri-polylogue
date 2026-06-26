@@ -9,6 +9,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -55,6 +56,16 @@ class PolylogueHandler(BaseHTTPRequestHandler):
             return None
         return candidate
 
+    def _validated_session(self, raw_session: str) -> str | None:
+        session = raw_session.strip()
+        if not session:
+            return "default"
+        if len(session) > 80:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+            return None
+        return session
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/health":
@@ -87,8 +98,16 @@ class PolylogueHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/register":
             body = self._read_json()
-            cwd = Path(body.get("cwd", str(Path.cwd())))
-            session = str(body.get("session", "default"))
+            cwd_raw = str(body.get("cwd", str(Path.cwd())))
+            cwd = self._validated_cwd(cwd_raw)
+            if cwd is None:
+                self._send_json(400, {"error": "invalid cwd"})
+                return
+            session_raw = str(body.get("session", "default"))
+            session = self._validated_session(session_raw)
+            if session is None:
+                self._send_json(400, {"error": "invalid session"})
+                return
             entry = reg.register_workspace(cwd, session)
             self._send_json(200, entry)
             return
