@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -45,21 +46,23 @@ class PolylogueHandler(BaseHTTPRequestHandler):
 
     def _validated_cwd(self, raw_cwd: str) -> Path | None:
         base = Path.cwd().resolve()
-        raw = str(raw_cwd or "").strip()
-        if not raw or "\x00" in raw:
+        if not raw_cwd or "\x00" in raw_cwd:
             return None
-        normalized = os.path.normpath(raw)
-        if os.path.isabs(normalized):
+        if raw_cwd.startswith("~"):
             return None
-        candidate = (base / Path(normalized).expanduser()).resolve()
+        if os.path.isabs(raw_cwd):
+            return None
+
+        normalized = os.path.normpath(raw_cwd)
+        candidate = (base / normalized).resolve()
         try:
             candidate.relative_to(base)
         except ValueError:
             return None
         return candidate
 
-    def _validated_session(self, raw_session: str) -> str | None:
-        session = raw_session.strip()
+    def _validated_session(self, raw_session: Any) -> str | None:
+        session = str(raw_session).strip()
         if not session:
             return "default"
         if len(session) > 80:
