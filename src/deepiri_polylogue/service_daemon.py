@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -55,6 +56,16 @@ class PolylogueHandler(BaseHTTPRequestHandler):
             return None
         return candidate
 
+    def _validated_session(self, raw_session: Any) -> str | None:
+        session = str(raw_session).strip()
+        if not session:
+            return "default"
+        if len(session) > 80:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+            return None
+        return session
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path == "/health":
@@ -87,8 +98,14 @@ class PolylogueHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/register":
             body = self._read_json()
-            cwd = Path(body.get("cwd", str(Path.cwd())))
-            session = str(body.get("session", "default"))
+            cwd = self._validated_cwd(str(body.get("cwd", str(Path.cwd()))))
+            if cwd is None:
+                self._send_json(400, {"error": "invalid cwd"})
+                return
+            session = self._validated_session(body.get("session", "default"))
+            if session is None:
+                self._send_json(400, {"error": "invalid session"})
+                return
             entry = reg.register_workspace(cwd, session)
             self._send_json(200, entry)
             return
