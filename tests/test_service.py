@@ -74,3 +74,42 @@ def test_handler_health(isolated_data):
 
 def test_data_dir_under_xdg(isolated_data, tmp_path):
     assert data_dir().startswith(str(tmp_path))
+
+
+def test_ensure_service_noop_when_running(isolated_data, monkeypatch):
+    import subprocess
+
+    from deepiri_polylogue import service_client as sc
+
+    monkeypatch.setattr(sc, "is_running", lambda: True)
+
+    def _no_spawn(*args, **kwargs):
+        raise AssertionError("ensure_service must not spawn a daemon when one is running")
+
+    monkeypatch.setattr(subprocess, "Popen", _no_spawn)
+    assert sc.ensure_service() is True
+
+
+def test_ensure_service_spawns_when_down(isolated_data, monkeypatch):
+    import subprocess
+
+    from deepiri_polylogue import service_client as sc
+
+    calls = {"is_running": 0}
+
+    def _is_running():
+        # First call (guard) reports down; after the spawn it reports healthy.
+        calls["is_running"] += 1
+        return calls["is_running"] >= 2
+
+    spawned = {"count": 0}
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs):
+            spawned["count"] += 1
+
+    monkeypatch.setattr(sc, "is_running", _is_running)
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    assert sc.ensure_service(wait_s=2.0) is True
+    assert spawned["count"] == 1
