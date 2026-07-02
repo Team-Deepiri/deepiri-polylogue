@@ -91,16 +91,37 @@ class JournalBridge:
         if env:
             self.set_root(env)
             return True
-        candidates = [Path.cwd(), Path.cwd() / ".deepiri"]
-        for c in candidates:
-            j = c / "polylogue" / "journal.jsonl"
-            if j.exists() or (c / "polylogue").is_dir():
-                self.set_root(c / "polylogue")
+        # Reuse an already-present repo sidecar if one exists, but NEVER create a
+        # `polylogue/` (or `.deepiri/polylogue/`) directory inside a project working
+        # directory. The previous logic keyed on `c.is_dir()`, and Path.cwd() is always
+        # a directory, so it dropped a stray `polylogue/journal.jsonl` into whatever repo
+        # the orchestrator happened to run in.
+        for existing in (Path.cwd() / "polylogue", Path.cwd() / ".deepiri" / "polylogue"):
+            if existing.is_dir() or (existing / "journal.jsonl").exists():
+                self.set_root(existing)
                 return True
-            if j.exists() or c.is_dir():
-                self.set_root(c / "polylogue")
-                return True
-        return False
+        # Otherwise use the canonical per-user root resolved by deepiri_polylogue
+        # (service/XDG data dir) — the same place its journal readers look. If that
+        # resolver would fall back to a path INSIDE the project dir (its no-service
+        # `.deepiri/polylogue` fallback), redirect to the shared data dir so we never
+        # write into the working directory.
+        from deepiri_polylogue.platform_detect import data_dir
+
+        cwd = Path.cwd().resolve()
+        try:
+            from deepiri_polylogue.paths import polylogue_root
+
+            root = Path(polylogue_root(cwd)).resolve()
+        except Exception:
+            root = (Path(data_dir()) / "polylogue").resolve()
+        try:
+            root.relative_to(cwd)
+            # resolved inside the project dir → keep it out of the repo
+            root = (Path(data_dir()) / "polylogue").resolve()
+        except ValueError:
+            pass
+        self.set_root(root)
+        return True
 
     def start(self) -> None:
         if not self._root or not self._path:

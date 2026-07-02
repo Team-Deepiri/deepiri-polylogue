@@ -41,6 +41,17 @@ def _run_sync(coro: Any) -> None:
         raise error[0]
 
 
+def _bridge_unavailable(base: str, exc: BaseException) -> ConnectionError:
+    """Translate a low-level connection failure (e.g. ConnectionRefusedError / [Errno 111])
+    into an actionable message. Returns a ConnectionError (an OSError subclass, so the CLI's
+    existing OSError handler prints it cleanly instead of a bare errno)."""
+    return ConnectionError(
+        f"No polylogue bridge is reachable at {base}. "
+        f"Start one first — 'polylogue bridge listen' (as an agent, keeps a persistent "
+        f"outbox) or 'polylogue start' (orchestrator) — then retry. ({exc})"
+    )
+
+
 async def _send_payload_async(
     room: str,
     participant_id: str,
@@ -52,12 +63,15 @@ async def _send_payload_async(
 
     base = (url or bridge_url()).rstrip("/")
     uri = f"{base}/ws?room={quote(room)}&id={quote(participant_id)}"
-    async with websockets.connect(uri) as ws:
-        await ws.send(encode(payload))
-        try:
-            await asyncio.wait_for(ws.recv(), timeout=1.0)
-        except (TimeoutError, Exception):
-            pass
+    try:
+        async with websockets.connect(uri) as ws:
+            await ws.send(encode(payload))
+            try:
+                await asyncio.wait_for(ws.recv(), timeout=1.0)
+            except (TimeoutError, Exception):
+                pass
+    except (ConnectionRefusedError, OSError) as exc:
+        raise _bridge_unavailable(base, exc) from exc
 
 
 async def _send_async(

@@ -15,7 +15,7 @@ from .pack import render_sync_pack
 from .participants import load_participants, touch_participant, upsert_participant
 from .paths import polylogue_root
 from .platform_detect import data_dir, detect_platform
-from .service_client import health, is_running
+from .service_client import ensure_service, health, is_running
 from .service_config import bridge_url, pid_path, service_url
 from .service_daemon import PolylogueService
 from .service_install import install_service, uninstall_service
@@ -487,6 +487,9 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
         print(json.dumps(_ctx().to_json(), indent=2))
         return 0
     if args.bridge_cmd == "listen":
+        # Auto-start the shared daemon so two sessions become reachable with no manual
+        # 'service start' — first one up hosts the bridge, the rest just connect.
+        ensure_service()
         try:
             listen_loop(
                 cwd or Path.cwd(),
@@ -498,6 +501,7 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
             return 0
         return 0
     if args.bridge_cmd == "connect":
+        ensure_service()
         ctx = _ctx()
 
         def on_message(data: dict) -> None:
@@ -515,6 +519,7 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
             return 0
         return 0
     if args.bridge_cmd == "send":
+        ensure_service()
         ctx = _ctx()
         target = resolve_send_target(
             ctx,
