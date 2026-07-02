@@ -51,3 +51,45 @@ def register_workspace(cwd: Path, session: str) -> dict[str, Any]:
         if result and result.get("session_root"):
             return result
     return reg.register_workspace(cwd, session)
+
+
+def ensure_service(wait_s: float = 6.0) -> bool:
+    """Ensure the shared coordination daemon is running, auto-starting it if not.
+
+    This is what lets two independent agent sessions become reachable to each other with
+    zero manual setup: the first participant to touch the bridge brings the shared daemon
+    up (detached, so it outlives this CLI invocation), and subsequent sessions just connect
+    to the same daemon. If two sessions race, only one wins the port bind and the other
+    simply reuses it. Best-effort: returns True if the daemon is (or becomes) healthy.
+    """
+    import subprocess
+    import sys
+    import time
+
+    if is_running():
+        return True
+
+    from .service_config import log_path
+
+    try:
+        logf: Any = open(log_path(), "ab")  # noqa: SIM115 — handed to the detached child
+    except OSError:
+        logf = subprocess.DEVNULL
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "deepiri_polylogue.service_daemon"],
+            stdin=subprocess.DEVNULL,
+            stdout=logf,
+            stderr=logf,
+            start_new_session=True,  # detach so the daemon survives this process exiting
+        )
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if is_running():
+            return True
+        time.sleep(0.15)
+    return is_running()
