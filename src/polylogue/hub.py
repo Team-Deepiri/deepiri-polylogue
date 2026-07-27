@@ -10,7 +10,10 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any, Callable
 
-import redis  # type: ignore
+try:
+    import redis  # type: ignore
+except ImportError:  # pragma: no cover - optional runtime dependency
+    redis = None  # type: ignore
 
 from polylogue.models import (
     AgentCapability,
@@ -280,6 +283,10 @@ class RedisHub:
         self.context: ContextIsolator = None  # type: ignore[assignment]
 
     def connect(self) -> RedisHub:
+        if redis is None:
+            raise RuntimeError(
+                "redis package required for PolyBridge hub: pip install 'deepiri-polylogue[redis]'"
+            )
         self._redis = redis.Redis(
             host=self.host,
             port=self.port,
@@ -548,6 +555,10 @@ class RedisHub:
 
 
 def create_hub(config: dict | None = None, **kwargs) -> RedisHub:
+    if redis is None:
+        raise RuntimeError(
+            "redis package required for PolyBridge hub: pip install 'deepiri-polylogue[redis]'"
+        )
     cfg = config or {}
     return RedisHub(
         host=cfg.get("host", kwargs.get("host", "127.0.0.1")),
