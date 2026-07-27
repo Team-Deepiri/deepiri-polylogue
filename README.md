@@ -135,8 +135,24 @@ polylogue sync-pack --context-bytes 32000
 ## Documentation
 
 - [Design](docs/DESIGN.md) — model, event taxonomy, storage layout, and threat notes  
-- [Streaming bridge](docs/STREAMING_BRIDGE.md) — optional streaming integration  
+- [Streaming bridge](docs/STREAMING_BRIDGE.md) — optional native TCP fan-out (`polybridge`)  
 - [Cohesion recipe](examples/cohesion-recipe.md) — practical usage pattern  
+
+## PolyBridge (optional orchestration)
+
+Filesystem journal mode needs no Redis. For multi-agent fan-out (master/slave DAG,
+leader election, WS API), install the orchestration extras and run the `polylogue`
+entry point against a local Redis:
+
+```bash
+python3 -m pip install -e ".[orchestration]"
+# Redis on 127.0.0.1:6379, then:
+polylogue --config polylogue.yaml
+```
+
+Native live token relay (no Redis) remains the C hub in `native/polybridge` — see
+[Streaming bridge](docs/STREAMING_BRIDGE.md). Keep secrets out of both the journal
+and bridge payloads.
 
 ## Security
 

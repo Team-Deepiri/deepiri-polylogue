@@ -27,9 +27,11 @@ polylogue = "polylogue.__main__:main"
 deepiri-polylogue = "deepiri_polylogue.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "redis", "pyyaml", "websockets>=12.0"]
+dev = ["pytest>=7.4", "redis", "pyyaml", "websockets>=12.0", "ruff>=0.15.20,<0.16"]
 redis = ["redis"]
 pyyaml = ["pyyaml"]
+bridge = ["websockets>=12.0"]
+orchestration = ["redis", "aiohttp>=3.9", "pyyaml"]
 
 [project.urls]
 Homepage = "https://github.com/deepiri/deepiri-polylogue"
