@@ -1,6 +1,25 @@
-# Cohesion recipe (multi-window)
+# Cohesion recipe (multi-window / multi-provider)
 
-Goal: three different LLM surfaces (any providers) co-own one task.
+Goal: several LLM surfaces — **any MCP host / provider** — co-own one task.
+
+## MCP path (recommended)
+
+1. Install once: `./install.sh --mcp` (library + deps + `deepiri-polylogue-mcp`).
+2. Point **each** host at Polylogue using the matching file in [`examples/mcp/`](mcp/):
+   - Cursor → `mcp/cursor.json`
+   - Claude Desktop / Claude Code → `mcp/claude-desktop.json` / `mcp/claude-code.json`
+   - OpenCode → `mcp/opencode.json`
+   - Google Antigravity / Gemini CLI → `mcp/antigravity.json` / `mcp/gemini-cli.json`
+   - Codex → `mcp/codex.toml` (TOML for `~/.codex/config.toml`, not JSON)
+   - VS Code / Windsurf → `mcp/vscode.json` / `mcp/windsurf.json`
+3. Set `POLYLOGUE_MCP_CWD` to the same repo and a distinct `POLYLOGUE_PROVIDER` per surface.
+4. Tell each agent to use Polylogue. At turn start: **`polylogue_turn_aware`**.
+5. After work: **`polylogue_say`** (durable) and/or **`polylogue_bridge_send`** (live).
+6. Before overwriting shared files: **`polylogue_file_read`** then **`polylogue_file_assert`**.
+
+See [docs/MCP.md](../docs/MCP.md) for the full tool list.
+
+## CLI path
 
 1. In the repo root, run once:
 

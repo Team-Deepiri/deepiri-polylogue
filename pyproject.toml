@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepiri-polylogue"
-version = "0.3.2"
+version = "0.4.0"
 description = "Filesystem-first shared journal so many LLM surfaces stay mutually aware (Deepiri)."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["websockets>=12.0"]
 license = { text = "Apache-2.0" }
 authors = [{ name = "Deepiri" }]
-keywords = ["llm", "multi-agent", "sync", "deepiri", "journal"]
+keywords = ["llm", "multi-agent", "sync", "deepiri", "journal", "mcp"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -25,13 +25,15 @@ classifiers = [
 [project.scripts]
 polylogue = "polylogue.__main__:main"
 deepiri-polylogue = "deepiri_polylogue.cli:main"
+deepiri-polylogue-mcp = "deepiri_polylogue.mcp:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "redis", "pyyaml", "websockets>=12.0", "ruff>=0.15.20,<0.16"]
+dev = ["pytest>=7.4", "redis", "pyyaml", "websockets>=12.0", "ruff>=0.15.20,<0.16", "mcp>=2.0"]
 redis = ["redis"]
 pyyaml = ["pyyaml"]
 bridge = ["websockets>=12.0"]
 orchestration = ["redis", "aiohttp>=3.9", "pyyaml"]
+mcp = ["mcp>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/deepiri/deepiri-polylogue"
