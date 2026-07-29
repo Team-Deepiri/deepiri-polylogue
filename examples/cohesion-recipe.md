@@ -10,7 +10,8 @@ Goal: several LLM surfaces — **any MCP host / provider** — co-own one task.
    - Claude Desktop / Claude Code → `mcp/claude-desktop.json` / `mcp/claude-code.json`
    - OpenCode → `mcp/opencode.json`
    - Google Antigravity / Gemini CLI → `mcp/antigravity.json` / `mcp/gemini-cli.json`
-   - Codex / VS Code / Windsurf → `mcp/codex.json` / `mcp/vscode.json` / `mcp/windsurf.json`
+   - Codex → `mcp/codex.toml` (TOML for `~/.codex/config.toml`, not JSON)
+   - VS Code / Windsurf → `mcp/vscode.json` / `mcp/windsurf.json`
 3. Set `POLYLOGUE_MCP_CWD` to the same repo and a distinct `POLYLOGUE_PROVIDER` per surface.
 4. Tell each agent to use Polylogue. At turn start: **`polylogue_turn_aware`**.
 5. After work: **`polylogue_say`** (durable) and/or **`polylogue_bridge_send`** (live).

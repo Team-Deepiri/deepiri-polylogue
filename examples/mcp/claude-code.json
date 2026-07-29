@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "polylogue": {
+      "type": "stdio",
       "command": "deepiri-polylogue-mcp",
       "args": [],
       "env": {
