@@ -1,0 +1,13 @@
+{
+  "_comment": "Moved — use examples/mcp/ for host-accurate configs (Cursor, Claude, OpenCode, Antigravity, Gemini CLI, Codex TOML, VS Code, Windsurf).",
+  "mcpServers": {
+    "polylogue": {
+      "command": "deepiri-polylogue-mcp",
+      "args": [],
+      "env": {
+        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo",
+        "POLYLOGUE_PROVIDER": "cursor"
+      }
+    }
+  }
+}

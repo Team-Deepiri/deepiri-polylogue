@@ -19,7 +19,8 @@ One-shot install (puts `deepiri-polylogue` on `~/.local/bin` and starts the serv
 ```bash
 git clone https://github.com/Team-Deepiri/deepiri-polylogue.git
 cd deepiri-polylogue
-./install.sh
+./install.sh              # library + deps + CLI + service
+./install.sh --mcp        # same, plus deepiri-polylogue-mcp for all MCP hosts
 export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc if needed
 ```
 
@@ -31,7 +32,21 @@ python3 -m venv .venv && source .venv/bin/activate
 python3 -m pip install -e ".[dev]" 2>/dev/null || python3 -m pip install -e .
 ```
 
-CLI entry points: **`deepiri-polylogue`** (journal + service + bridge) and **`polylogue`** (Redis orchestration package).
+CLI entry points: **`deepiri-polylogue`** (journal + service + bridge), **`deepiri-polylogue-mcp`** (MCP stdio server), and **`polylogue`** (Redis orchestration package).
+
+### MCP (v0.4+)
+
+One stdio MCP for **every** host — Cursor, Claude Desktop/Code, OpenCode, Google Antigravity,
+Gemini CLI, Codex, VS Code, Windsurf, and any other MCP client:
+
+```bash
+./install.sh --mcp
+# or: python3 -m pip install -e ".[mcp]"
+```
+
+Host-specific configs live in [`examples/mcp/`](examples/mcp/) (set `POLYLOGUE_MCP_CWD` +
+`POLYLOGUE_PROVIDER` per surface). Agents call `polylogue_turn_aware` then discover peers
+across providers. Full guide: [docs/MCP.md](docs/MCP.md).
 
 ### Real-time bridge (v0.3+)
 
@@ -135,6 +150,7 @@ polylogue sync-pack --context-bytes 32000
 ## Documentation
 
 - [Design](docs/DESIGN.md) — model, event taxonomy, storage layout, and threat notes  
+- [MCP](docs/MCP.md) — stdio MCP server for Cursor / Claude / other hosts  
 - [Streaming bridge](docs/STREAMING_BRIDGE.md) — optional native TCP fan-out (`polybridge`)  
 - [Cohesion recipe](examples/cohesion-recipe.md) — practical usage pattern  
 

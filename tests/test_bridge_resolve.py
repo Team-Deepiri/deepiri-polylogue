@@ -10,6 +10,27 @@ def test_detect_provider_cursor(monkeypatch):
     assert detect_provider() == "cursor"
 
 
+def test_detect_provider_explicit_override(monkeypatch):
+    monkeypatch.setenv("CURSOR_AGENT", "1")
+    monkeypatch.setenv("POLYLOGUE_PROVIDER", "antigravity")
+    assert detect_provider() == "antigravity"
+
+
+def test_detect_provider_opencode_env(monkeypatch):
+    monkeypatch.delenv("CURSOR_AGENT", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PROVIDER", raising=False)
+    monkeypatch.setenv("OPENCODE_SESSION", "1")
+    assert detect_provider() == "opencode"
+
+
+def test_detect_provider_antigravity_env(monkeypatch):
+    monkeypatch.delenv("CURSOR_AGENT", raising=False)
+    monkeypatch.delenv("POLYLOGUE_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENCODE_SESSION", raising=False)
+    monkeypatch.setenv("ANTIGRAVITY_AGENT", "1")
+    assert detect_provider() == "antigravity"
+
+
 def test_find_repo_root(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".git").mkdir()

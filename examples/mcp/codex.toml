@@ -1,0 +1,15 @@
+# Codex CLI / IDE / ChatGPT desktop — edit ~/.codex/config.toml
+# (or project-scoped .codex/config.toml for trusted projects).
+# Official docs: https://developers.openai.com/codex/mcp
+#
+# Manage via CLI instead of hand-editing if you prefer:
+#   codex mcp add polylogue --env POLYLOGUE_MCP_CWD=/absolute/path/to/your/repo --env POLYLOGUE_PROVIDER=codex -- deepiri-polylogue-mcp
+
+[mcp_servers.polylogue]
+command = "deepiri-polylogue-mcp"
+args = []
+startup_timeout_sec = 20.0
+
+[mcp_servers.polylogue.env]
+POLYLOGUE_MCP_CWD = "/absolute/path/to/your/repo"
+POLYLOGUE_PROVIDER = "codex"

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "polylogue": {
+      "command": "deepiri-polylogue-mcp",
+      "args": [],
+      "cwd": "/absolute/path/to/your/repo",
+      "env": {
+        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo",
+        "POLYLOGUE_PROVIDER": "gemini"
+      },
+      "trust": false
+    }
+  }
+}

@@ -65,12 +65,55 @@ def _process_tree_blob() -> str:
 
 
 def detect_provider() -> str:
+    """Infer which LLM surface is calling us (for roster / bridge identity).
+
+    Order: explicit POLYLOGUE_PROVIDER → well-known env vars → process tree heuristics.
+    """
+    explicit = os.environ.get("POLYLOGUE_PROVIDER", "").strip().lower()
+    if explicit:
+        return explicit
+
+    # Cursor
     if os.environ.get("CURSOR_AGENT") == "1" or os.environ.get("CURSOR_TRACE_ID"):
         return "cursor"
+
+    # OpenCode
     for key in ("OPENCODE", "OPENCODE_SESSION", "OPENCODE_CONFIG"):
         if os.environ.get(key):
             return "opencode"
+
+    # Claude Code / Anthropic
+    for key in ("CLAUDE_CODE", "CLAUDE_CODE_ENTRYPOINT", "ANTHROPIC_API_KEY"):
+        # Prefer process-tree for API key alone (too generic); env flags are stronger.
+        if key != "ANTHROPIC_API_KEY" and os.environ.get(key):
+            return "claude"
+
+    # Google Antigravity / Gemini CLI / Gemini Code Assist
+    for key in (
+        "ANTIGRAVITY",
+        "ANTIGRAVITY_AGENT",
+        "GEMINI_CLI",
+        "GEMINI_API_KEY",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+    ):
+        if key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI"):
+            continue  # too generic alone
+        if os.environ.get(key):
+            if "antigravity" in key.lower():
+                return "antigravity"
+            return "gemini"
+
+    # Codex
+    if os.environ.get("CODEX_HOME") or os.environ.get("OPENAI_CODEX"):
+        return "codex"
+
+    # Windsurf
+    if os.environ.get("WINDSURF") or os.environ.get("CODEIUM_WINDSURF"):
+        return "windsurf"
+
     blob = _process_tree_blob()
+    if "antigravity" in blob or "agy " in blob or "/agy" in blob:
+        return "antigravity"
     if "opencode" in blob:
         return "opencode"
     if "cursor-agent" in blob or "cursor agent" in blob or "/.cursor/" in blob:
@@ -81,6 +124,10 @@ def detect_provider() -> str:
         return "codex"
     if "gemini" in blob:
         return "gemini"
+    if "windsurf" in blob:
+        return "windsurf"
+    if "vscode" in blob or "code-insiders" in blob:
+        return "vscode"
     return "unknown"
 
 
