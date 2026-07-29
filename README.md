@@ -35,28 +35,17 @@ CLI entry points: **`deepiri-polylogue`** (journal + service + bridge), **`deepi
 
 ### MCP (v0.4+)
 
-Install the optional MCP extra and point your host at the stdio server so agents can discover peers and share context without shelling out:
+One stdio MCP for **every** host — Cursor, Claude Desktop/Code, OpenCode, Google Antigravity,
+Gemini CLI, Codex, VS Code, Windsurf, and any other MCP client:
 
 ```bash
 python3 -m pip install -e ".[mcp]"
+# or: ./install.sh
 ```
 
-Cursor / Claude Desktop example (`mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "polylogue": {
-      "command": "deepiri-polylogue-mcp",
-      "env": {
-        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo"
-      }
-    }
-  }
-}
-```
-
-Agents call `polylogue_turn_aware` (or `ensure` + `sync_pack` / `peers` / `bridge_send` / `bridge_inbox`) for cross-provider cohesion. Full tool list: [docs/MCP.md](docs/MCP.md). Example host config: [examples/mcp.cursor.json](examples/mcp.cursor.json).
+Host-specific configs live in [`examples/mcp/`](examples/mcp/) (set `POLYLOGUE_MCP_CWD` +
+`POLYLOGUE_PROVIDER` per surface). Agents call `polylogue_turn_aware` then discover peers
+across providers. Full guide: [docs/MCP.md](docs/MCP.md).
 
 ### Real-time bridge (v0.3+)
 

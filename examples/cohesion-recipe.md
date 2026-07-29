@@ -1,14 +1,20 @@
-# Cohesion recipe (multi-window)
+# Cohesion recipe (multi-window / multi-provider)
 
-Goal: several LLM surfaces (any providers) co-own one task.
+Goal: several LLM surfaces — **any MCP host / provider** — co-own one task.
 
 ## MCP path (recommended)
 
 1. Install once: `./install.sh` (links `deepiri-polylogue-mcp`).
-2. Point Cursor/Claude at [examples/mcp.cursor.json](mcp.cursor.json) with `POLYLOGUE_MCP_CWD` set to the repo.
-3. Tell each agent to use Polylogue. At turn start they should call **`polylogue_turn_aware`** (ensure + sync pack + peers + inbox).
-4. After meaningful work: **`polylogue_say`** (durable) and/or **`polylogue_bridge_send`** (live).
-5. Before overwriting files another agent may touch: **`polylogue_file_read`** then **`polylogue_file_assert`**.
+2. Point **each** host at Polylogue using the matching file in [`examples/mcp/`](mcp/):
+   - Cursor → `mcp/cursor.json`
+   - Claude Desktop / Claude Code → `mcp/claude-desktop.json` / `mcp/claude-code.json`
+   - OpenCode → `mcp/opencode.json`
+   - Google Antigravity / Gemini CLI → `mcp/antigravity.json` / `mcp/gemini-cli.json`
+   - Codex / VS Code / Windsurf → `mcp/codex.json` / `mcp/vscode.json` / `mcp/windsurf.json`
+3. Set `POLYLOGUE_MCP_CWD` to the same repo and a distinct `POLYLOGUE_PROVIDER` per surface.
+4. Tell each agent to use Polylogue. At turn start: **`polylogue_turn_aware`**.
+5. After work: **`polylogue_say`** (durable) and/or **`polylogue_bridge_send`** (live).
+6. Before overwriting shared files: **`polylogue_file_read`** then **`polylogue_file_assert`**.
 
 See [docs/MCP.md](../docs/MCP.md) for the full tool list.
 

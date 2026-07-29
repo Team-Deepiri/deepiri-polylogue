@@ -85,7 +85,8 @@ echo "  deepiri-polylogue --cwd /path/to/repo bridge listen"
 echo "  deepiri-polylogue --cwd /path/to/repo bridge send --text \"hello\""
 if [[ "$INSTALL_MCP" -eq 1 ]]; then
   echo ""
-  echo "MCP (Cursor / Claude Desktop):"
+  echo "MCP (all hosts — Cursor, Claude, OpenCode, Antigravity/Gemini, Codex, VS Code, Windsurf):"
   echo "  command: $BIN_DIR/deepiri-polylogue-mcp"
-  echo "  See docs/MCP.md and examples/mcp.cursor.json"
+  echo "  configs: examples/mcp/  (set POLYLOGUE_MCP_CWD + POLYLOGUE_PROVIDER per surface)"
+  echo "  docs:    docs/MCP.md"
 fi

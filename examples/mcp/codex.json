@@ -1,12 +1,11 @@
 {
-  "_comment": "Moved — use examples/mcp/cursor.json (and examples/mcp/ for Claude, OpenCode, Antigravity, Gemini, Codex, VS Code, Windsurf).",
   "mcpServers": {
     "polylogue": {
       "command": "deepiri-polylogue-mcp",
       "args": [],
       "env": {
         "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo",
-        "POLYLOGUE_PROVIDER": "cursor"
+        "POLYLOGUE_PROVIDER": "codex"
       }
     }
   }

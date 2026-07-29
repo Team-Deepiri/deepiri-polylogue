@@ -31,7 +31,8 @@ from ..store import init_session, load_meta
 
 INSTRUCTIONS = """\
 You are connected to Polylogue: a shared journal + live bridge so multiple LLM agents
-(Cursor, Claude, OpenCode, Codex, Gemini, etc.) stay mutually aware on the same mission.
+across ANY MCP host stay mutually aware — Cursor, Claude Desktop/Code, OpenCode,
+Google Antigravity, Gemini CLI, Codex, VS Code, Windsurf, and more.
 
 Cohesion loop (follow every turn you participate):
 1. Prefer polylogue_turn_aware once per turn (ensure + sync pack + peers + inbox).
@@ -813,10 +814,12 @@ def turn_aware(
 
 COHESION_PROMPT = """\
 You are one of several LLM agents coordinating through Polylogue on the same mission.
+Peers may be on Cursor, Claude Desktop/Code, OpenCode, Google Antigravity, Gemini CLI,
+Codex, VS Code, Windsurf, or any other MCP host — provider does not matter.
 
 At the start of every substantive turn:
 1. Call polylogue_turn_aware (or polylogue_ensure + polylogue_sync_pack + polylogue_bridge_inbox).
-2. Read live peers via polylogue_peers — other providers (cursor, claude, opencode, …) may be active.
+2. Read live peers via polylogue_peers — other providers may be active in this room.
 3. Incorporate their journal utterances and bridge inbox messages before deciding.
 
 When you finish a meaningful slice of work:

@@ -1,7 +1,9 @@
 # Polylogue MCP
 
-The Polylogue MCP server lets Cursor, Claude Desktop, and other MCP hosts join the same
-shared journal + live bridge without shelling out to the CLI.
+The Polylogue MCP server is **one stdio binary for every MCP host** — Cursor, Claude Desktop,
+Claude Code, OpenCode, Google Antigravity, Gemini CLI, Codex, VS Code agents, Windsurf, and
+any other client that speaks MCP stdio. Agents on different providers join the same journal
++ live bridge and see each other via `polylogue_peers`.
 
 ## Install
 
@@ -14,10 +16,32 @@ python3 -m pip install -e ".[mcp]"
 
 Entry point: `deepiri-polylogue-mcp` (stdio).
 
-### Cursor
+## Configure every host
 
-Copy [examples/mcp.cursor.json](../examples/mcp.cursor.json) into `~/.cursor/mcp.json`
-(or project `.cursor/mcp.json`) and set `POLYLOGUE_MCP_CWD` to your repo:
+Copy the matching file from [`examples/mcp/`](../examples/mcp/) and set:
+
+- `POLYLOGUE_MCP_CWD` — absolute path to the shared repo
+- `POLYLOGUE_PROVIDER` — stable roster label (`cursor`, `claude`, `opencode`, `gemini`,
+  `antigravity`, `codex`, `vscode`, `windsurf`, …)
+
+| Host | Example | Config location |
+|------|---------|-----------------|
+| Cursor | [examples/mcp/cursor.json](../examples/mcp/cursor.json) | `~/.cursor/mcp.json` or `.cursor/mcp.json` |
+| Claude Desktop | [examples/mcp/claude-desktop.json](../examples/mcp/claude-desktop.json) | macOS `~/Library/Application Support/Claude/claude_desktop_config.json`; Linux `~/.config/Claude/…`; Windows `%APPDATA%\Claude\…` |
+| Claude Code | [examples/mcp/claude-code.json](../examples/mcp/claude-code.json) | project `.mcp.json` |
+| OpenCode | [examples/mcp/opencode.json](../examples/mcp/opencode.json) | project `opencode.json` or `~/.config/opencode/opencode.json` |
+| Google Antigravity | [examples/mcp/antigravity.json](../examples/mcp/antigravity.json) | `~/.gemini/config/mcp_config.json` or `.agents/mcp_config.json` |
+| Gemini CLI | [examples/mcp/gemini-cli.json](../examples/mcp/gemini-cli.json) | same Gemini/Antigravity MCP config |
+| OpenAI Codex | [examples/mcp/codex.json](../examples/mcp/codex.json) | Codex MCP settings |
+| VS Code | [examples/mcp/vscode.json](../examples/mcp/vscode.json) | `.vscode/mcp.json` |
+| Windsurf | [examples/mcp/windsurf.json](../examples/mcp/windsurf.json) | `~/.codeium/windsurf/mcp_config.json` |
+
+Index + notes: [examples/mcp/README.md](../examples/mcp/README.md).
+
+If `deepiri-polylogue-mcp` is not on `PATH`, point `command` at
+`~/.local/bin/deepiri-polylogue-mcp` (after `./install.sh`) or your venv binary.
+
+### Shared `mcpServers` snippet (most hosts)
 
 ```json
 {
@@ -26,21 +50,21 @@ Copy [examples/mcp.cursor.json](../examples/mcp.cursor.json) into `~/.cursor/mcp
       "command": "deepiri-polylogue-mcp",
       "args": [],
       "env": {
-        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo"
+        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo",
+        "POLYLOGUE_PROVIDER": "claude"
       }
     }
   }
 }
 ```
 
-If `deepiri-polylogue-mcp` is not on `PATH`, point `command` at your venv or
-`$HOME/.local/bin/deepiri-polylogue-mcp` after `./install.sh`.
-
-### Claude Desktop
-
-Same stdio shape under `mcpServers` in Claude’s config file.
+OpenCode uses a different shape (`mcp` + `type: local` + `environment`) — see
+[examples/mcp/opencode.json](../examples/mcp/opencode.json). VS Code uses `servers` —
+see [examples/mcp/vscode.json](../examples/mcp/vscode.json).
 
 ## Agent cohesion loop
+
+Works the same no matter which host/provider you are:
 
 1. **`polylogue_turn_aware`** — preferred start-of-turn (ensure + sync pack + peers + inbox)
 2. Or: `polylogue_ensure` once, then `sync_pack` / `bridge_inbox` / `peers`
@@ -76,11 +100,13 @@ Resources: `polylogue://sync-pack`, `polylogue://status`, `polylogue://presence`
 
 ## Cross-provider discovery
 
-`ensure` / `whoami` use `detect_provider()` (Cursor, Claude, OpenCode, Codex, Gemini, …)
-and the session roster. Live peers come from the daemon’s bridge room membership on
-`ws://127.0.0.1:7850`. Two MCP-configured agents on the same repo call `ensure` (or
-`turn_aware`) and appear in each other’s `polylogue_peers` without a human running
-`service start` or `bridge listen`.
+`ensure` / `whoami` honor `POLYLOGUE_PROVIDER` first, then env/process heuristics for
+Cursor, Claude, OpenCode, Antigravity, Gemini, Codex, Windsurf, VS Code, and more.
+Live peers come from the daemon’s bridge room on `ws://127.0.0.1:7850`.
+
+Example: Cursor + Claude Code + Antigravity + OpenCode on the same repo each run
+`polylogue_turn_aware` and appear in each other’s `polylogue_peers` — no human
+`service start` or `bridge listen` required.
 
 ## Out of scope (CLI-only for now)
 

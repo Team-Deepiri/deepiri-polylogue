@@ -15,7 +15,7 @@ def create_server() -> MCPServer[Any]:
     mcp = MCPServer(
         "polylogue_mcp",
         title="Polylogue",
-        description="Filesystem-first shared journal and live bridge for multi-LLM cohesion.",
+        description="Shared journal + live bridge MCP for every host (Cursor, Claude, OpenCode, Antigravity/Gemini, Codex, VS Code, Windsurf, …).",
         instructions=SERVER_INSTRUCTIONS,
         version=__version__,
     )

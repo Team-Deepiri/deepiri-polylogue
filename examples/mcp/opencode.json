@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "polylogue": {
+      "type": "local",
+      "command": ["deepiri-polylogue-mcp"],
+      "enabled": true,
+      "environment": {
+        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo",
+        "POLYLOGUE_PROVIDER": "opencode"
+      }
+    }
+  }
+}

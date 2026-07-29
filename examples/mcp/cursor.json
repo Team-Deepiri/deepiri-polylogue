@@ -1,5 +1,4 @@
 {
-  "_comment": "Moved — use examples/mcp/cursor.json (and examples/mcp/ for Claude, OpenCode, Antigravity, Gemini, Codex, VS Code, Windsurf).",
   "mcpServers": {
     "polylogue": {
       "command": "deepiri-polylogue-mcp",
