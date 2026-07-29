@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,7 @@ def inbox_offset_path(participant_id: str) -> Path:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Return True if *pid* looks like a live (non-zombie) process we can signal."""
     if pid <= 0:
         return False
     try:
@@ -80,10 +82,59 @@ def _pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
+        # Process exists but we cannot signal it — still treat as alive.
         return True
     except OSError:
         return False
+
+    # Prefer /proc when available: reject zombies and vanished races.
+    stat_path = Path(f"/proc/{pid}/stat")
+    if stat_path.is_file():
+        try:
+            # Format: pid (comm) state ... — state after the last ')' of the comm field.
+            raw = stat_path.read_text(encoding="utf-8", errors="ignore")
+            close = raw.rfind(")")
+            if close >= 0 and close + 2 < len(raw):
+                state = raw[close + 2 : close + 3]
+                if state in ("Z", "X"):  # zombie / dead
+                    return False
+        except OSError:
+            pass
     return True
+
+
+def _listener_cmdline_matches(pid: int) -> bool:
+    """True if /proc cmdline looks like our bridge listen child (best-effort; non-Linux → True)."""
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    if not cmdline_path.is_file():
+        # No /proc (e.g. macOS/Windows) — fall back to PID liveness alone.
+        return True
+    try:
+        blob = cmdline_path.read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    if not blob.strip():
+        return False
+    return ("deepiri_polylogue" in blob or "deepiri-polylogue" in blob) and "listen" in blob
+
+
+def _listener_log_healthy(participant_id: str, *, max_age_s: float = 300.0) -> bool:
+    """True if the listener log exists and was touched recently or shows a connection."""
+    log_path, _ = state_paths(participant_id)
+    if not log_path.is_file():
+        return False
+    try:
+        age = time.time() - log_path.stat().st_mtime
+    except OSError:
+        return False
+    if age <= max_age_s:
+        return True
+    try:
+        # Stale mtime is ok if we previously connected (reconnect may be quiet).
+        tail = log_path.read_bytes()[-4096:].decode("utf-8", errors="ignore")
+    except OSError:
+        return False
+    return "connected room=" in tail or "recv:" in tail
 
 
 def listener_running(participant_id: str) -> bool:
@@ -94,7 +145,8 @@ def listener_running(participant_id: str) -> bool:
         pid = int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         return False
-    if not _pid_alive(pid):
+    healthy = _pid_alive(pid) and _listener_cmdline_matches(pid) and _listener_log_healthy(participant_id)
+    if not healthy:
         try:
             path.unlink(missing_ok=True)
         except OSError:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import threading
 import time
@@ -309,3 +310,22 @@ def test_mcp_resources_prompts_and_turn_aware(repo, no_daemon):
             assert "Polylogue" in text
 
     asyncio.run(run())
+
+
+def test_listener_health_helpers(tmp_path, monkeypatch):
+    monkeypatch.setenv("POLYLOGUE_BRIDGE_STATE_DIR", str(tmp_path / "bridge-state"))
+    assert sess._pid_alive(os.getpid()) is True
+    assert sess._pid_alive(0) is False
+    assert sess._pid_alive(999_999_999) is False
+
+    # Current pytest process is not a bridge listener.
+    assert sess._listener_cmdline_matches(os.getpid()) is False
+
+    pid_path = sess.listener_pid_path("cursor")
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    log_path, _ = state_paths("cursor")
+    log_path.write_text("connected room=x id=cursor\n", encoding="utf-8")
+    # PID alive + log ok, but cmdline is not our listener → treated as not running, pid file cleaned.
+    assert sess.listener_running("cursor") is False
+    assert not pid_path.is_file()
