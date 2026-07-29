@@ -4,7 +4,7 @@ Same stdio binary: `deepiri-polylogue-mcp`. Set `POLYLOGUE_MCP_CWD` to the share
 repo absolute path, and `POLYLOGUE_PROVIDER` to a stable roster label.
 
 If the binary is not on `PATH`, replace `command` with
-`~/.local/bin/deepiri-polylogue-mcp` (after `./install.sh`) or your venv path.
+`~/.local/bin/deepiri-polylogue-mcp` (after `./install.sh --mcp`) or your venv path.
 
 | Host | Example file | Official config location | Schema notes | Source |
 |------|--------------|--------------------------|--------------|--------|

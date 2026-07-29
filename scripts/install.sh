@@ -17,7 +17,7 @@ Usage: install.sh [options] [-- install.sh options]
 Options:
   -h, --help     Show this help
   --dry-run      Print actions without cloning or installing
-  -- install.sh options are passed to the repo install.sh (e.g. --no-service)
+  -- install.sh options are passed to the repo install.sh (e.g. --mcp, --no-service)
 
 Environment:
   DEEPIRI_POLYLOGUE_SRC        Use an existing checkout instead of cloning

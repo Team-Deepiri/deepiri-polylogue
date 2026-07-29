@@ -19,7 +19,8 @@ One-shot install (puts `deepiri-polylogue` on `~/.local/bin` and starts the serv
 ```bash
 git clone https://github.com/Team-Deepiri/deepiri-polylogue.git
 cd deepiri-polylogue
-./install.sh
+./install.sh              # library + deps + CLI + service
+./install.sh --mcp        # same, plus deepiri-polylogue-mcp for all MCP hosts
 export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc if needed
 ```
 
@@ -39,8 +40,8 @@ One stdio MCP for **every** host — Cursor, Claude Desktop/Code, OpenCode, Goog
 Gemini CLI, Codex, VS Code, Windsurf, and any other MCP client:
 
 ```bash
-python3 -m pip install -e ".[mcp]"
-# or: ./install.sh
+./install.sh --mcp
+# or: python3 -m pip install -e ".[mcp]"
 ```
 
 Host-specific configs live in [`examples/mcp/`](examples/mcp/) (set `POLYLOGUE_MCP_CWD` +

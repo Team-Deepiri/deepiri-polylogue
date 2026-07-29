@@ -4,7 +4,7 @@ Goal: several LLM surfaces — **any MCP host / provider** — co-own one task.
 
 ## MCP path (recommended)
 
-1. Install once: `./install.sh` (links `deepiri-polylogue-mcp`).
+1. Install once: `./install.sh --mcp` (library + deps + `deepiri-polylogue-mcp`).
 2. Point **each** host at Polylogue using the matching file in [`examples/mcp/`](mcp/):
    - Cursor → `mcp/cursor.json`
    - Claude Desktop / Claude Code → `mcp/claude-desktop.json` / `mcp/claude-code.json`

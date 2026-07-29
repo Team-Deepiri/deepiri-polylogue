@@ -9,10 +9,13 @@ any other client that speaks MCP stdio. Agents on different providers join the s
 
 ```bash
 cd deepiri-polylogue
-./install.sh                 # includes MCP binary symlink
+./install.sh --mcp           # library + deps + CLI + MCP binary
 # or:
 python3 -m pip install -e ".[mcp]"
 ```
+
+`./install.sh` alone installs the library/CLI/service without MCP.
+`./install.sh --mcp` adds the `[mcp]` extra and links `deepiri-polylogue-mcp`.
 
 Entry point: `deepiri-polylogue-mcp` (stdio).
 
@@ -40,7 +43,7 @@ host’s **documented** config shape and path. Set:
 Verified notes + common pitfalls: [examples/mcp/README.md](../examples/mcp/README.md).
 
 If `deepiri-polylogue-mcp` is not on `PATH`, point `command` at
-`~/.local/bin/deepiri-polylogue-mcp` (after `./install.sh`) or your venv binary.
+`~/.local/bin/deepiri-polylogue-mcp` (after `./install.sh --mcp`) or your venv binary.
 
 ## Agent cohesion loop
 
