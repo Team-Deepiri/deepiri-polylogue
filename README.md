@@ -56,7 +56,7 @@ Cursor / Claude Desktop example (`mcp.json`):
 }
 ```
 
-Agents call `polylogue_ensure` once, then `polylogue_sync_pack` / `polylogue_peers` / `polylogue_bridge_send` / `polylogue_bridge_inbox` for cross-provider cohesion. Full tool list: [docs/MCP.md](docs/MCP.md).
+Agents call `polylogue_turn_aware` (or `ensure` + `sync_pack` / `peers` / `bridge_send` / `bridge_inbox`) for cross-provider cohesion. Full tool list: [docs/MCP.md](docs/MCP.md). Example host config: [examples/mcp.cursor.json](examples/mcp.cursor.json).
 
 ### Real-time bridge (v0.3+)
 

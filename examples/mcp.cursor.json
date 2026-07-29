@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "polylogue": {
+      "command": "deepiri-polylogue-mcp",
+      "args": [],
+      "env": {
+        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo"
+      }
+    }
+  }
+}

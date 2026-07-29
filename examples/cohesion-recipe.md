@@ -1,6 +1,18 @@
 # Cohesion recipe (multi-window)
 
-Goal: three different LLM surfaces (any providers) co-own one task.
+Goal: several LLM surfaces (any providers) co-own one task.
+
+## MCP path (recommended)
+
+1. Install once: `./install.sh` (links `deepiri-polylogue-mcp`).
+2. Point Cursor/Claude at [examples/mcp.cursor.json](mcp.cursor.json) with `POLYLOGUE_MCP_CWD` set to the repo.
+3. Tell each agent to use Polylogue. At turn start they should call **`polylogue_turn_aware`** (ensure + sync pack + peers + inbox).
+4. After meaningful work: **`polylogue_say`** (durable) and/or **`polylogue_bridge_send`** (live).
+5. Before overwriting files another agent may touch: **`polylogue_file_read`** then **`polylogue_file_assert`**.
+
+See [docs/MCP.md](../docs/MCP.md) for the full tool list.
+
+## CLI path
 
 1. In the repo root, run once:
 

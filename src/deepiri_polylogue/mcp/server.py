@@ -301,6 +301,209 @@ def create_server() -> MCPServer[Any]:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
 
+    @mcp.tool()
+    def polylogue_turn_aware(
+        cwd: str | None = None,
+        session: str | None = None,
+        participant_id: str | None = None,
+        lines: int = 40,
+        inbox_limit: int = 50,
+    ) -> dict[str, Any]:
+        """One-shot start-of-turn: ensure + sync pack + live peers + bridge inbox.
+
+        Prefer this over calling ensure/sync_pack/peers/inbox separately when beginning work.
+        """
+        try:
+            return s.turn_aware(
+                cwd=cwd,
+                session=session,
+                participant_id=participant_id,
+                lines=lines,
+                inbox_limit=inbox_limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_context_set(text: str, cwd: str | None = None) -> dict[str, Any]:
+        """Replace shared context.md entirely (atomic). Prefer append for incremental updates."""
+        try:
+            return s.context_set(text, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_subagent_list(parent: str | None = None, cwd: str | None = None) -> dict[str, Any]:
+        """List registered subagent presence rows (optionally filtered by parent id)."""
+        try:
+            return s.subagent_list(parent=parent, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_subagent_add(
+        parent_id: str,
+        sub_id: str,
+        label: str | None = None,
+        state: str = "reading",
+        cwd_path: str | None = None,
+        note: str | None = None,
+        path_specs: list[str] | None = None,
+        journal: bool = True,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Register a subagent under a parent surface with optional path roles."""
+        try:
+            return s.subagent_add(
+                parent_id=parent_id,
+                sub_id=sub_id,
+                label=label,
+                state=state,
+                cwd_path=cwd_path,
+                note=note,
+                path_specs=path_specs,
+                journal=journal,
+                cwd=cwd,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_subagent_remove(
+        parent_id: str,
+        sub_id: str,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Remove one subagent presence row."""
+        try:
+            return s.subagent_remove(parent_id=parent_id, sub_id=sub_id, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_scratch_dir(
+        participant_id: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Return (and create) the per-participant scratch directory path."""
+        try:
+            return s.scratch_dir(participant_id=participant_id, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_scratch_write(
+        name: str,
+        text: str,
+        participant_id: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Atomically write text into scratch/<participant>/NAME (relative path)."""
+        try:
+            return s.scratch_write(name, text, participant_id=participant_id, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_scratch_list(cwd: str | None = None) -> dict[str, Any]:
+        """List per-participant scratch directories and file counts."""
+        try:
+            return s.scratch_list(cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_file_read(
+        path: str,
+        actor_id: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Record that an actor read a file (call before editing so peers can detect staleness)."""
+        try:
+            return s.file_read(path, actor_id=actor_id, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_file_check(
+        actor_id: str | None = None,
+        path: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """List files modified since the last recorded read (cross-surface stale detection)."""
+        try:
+            return s.file_check(actor_id=actor_id, path=path, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_file_assert(
+        path: str,
+        actor_id: str | None = None,
+        cwd: str | None = None,
+    ) -> dict[str, Any]:
+        """Assert a file is still fresh since this actor last read it. ok=false if stale."""
+        try:
+            return s.file_assert(path, actor_id=actor_id, cwd=cwd)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.resource(
+        "polylogue://sync-pack",
+        name="sync_pack",
+        title="Polylogue sync pack",
+        description="Full awareness Markdown for the current POLYLOGUE_MCP_CWD session.",
+        mime_type="text/markdown",
+    )
+    def resource_sync_pack() -> str:
+        return s.do_sync_pack()
+
+    @mcp.resource(
+        "polylogue://status",
+        name="status",
+        title="Polylogue status",
+        description="Session meta, roster, and key paths as JSON.",
+        mime_type="application/json",
+    )
+    def resource_status() -> dict[str, Any]:
+        return s.do_status()
+
+    @mcp.resource(
+        "polylogue://presence",
+        name="presence",
+        title="Polylogue presence",
+        description="Who is reading/editing what.",
+        mime_type="application/json",
+    )
+    def resource_presence() -> dict[str, Any]:
+        return s.presence_list()
+
+    @mcp.resource(
+        "polylogue://peers",
+        name="peers",
+        title="Polylogue peers",
+        description="Live bridge peers and roster for cross-provider discovery.",
+        mime_type="application/json",
+    )
+    def resource_peers() -> dict[str, Any]:
+        return s.peers()
+
+    @mcp.prompt(
+        name="polylogue_cohesion",
+        title="Polylogue cohesion recipe",
+        description="How to stay mutually aware with other LLM agents via Polylogue.",
+    )
+    def prompt_cohesion() -> str:
+        return s.COHESION_PROMPT
+
+    @mcp.prompt(
+        name="polylogue_turn_start",
+        title="Polylogue turn-start checklist",
+        description="Checklist for the start of an agent turn using Polylogue MCP tools.",
+    )
+    def prompt_turn_start() -> str:
+        return s.TURN_START_PROMPT
+
     return mcp
 
 

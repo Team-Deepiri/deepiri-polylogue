@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .. import filetime as ft
 from .. import registry as reg
 from .. import workspace as ws
 from ..bridge.client import bridge_status, send_message
@@ -32,12 +33,15 @@ You are connected to Polylogue: a shared journal + live bridge so multiple LLM a
 (Cursor, Claude, OpenCode, Codex, Gemini, etc.) stay mutually aware on the same mission.
 
 Cohesion loop (follow every turn you participate):
-1. Call polylogue_ensure once per session (auto-starts the daemon + bridge listener).
-2. Call polylogue_sync_pack and polylogue_bridge_inbox before substantive replies.
-3. Use polylogue_peers to see other live agents (any provider) in this room.
-4. Log material conclusions with polylogue_say (durable) and/or polylogue_bridge_send (live).
-5. Prefer auto-target when a single peer is live; use broadcast=true for the whole room.
+1. Prefer polylogue_turn_aware once per turn (ensure + sync pack + peers + inbox).
+   Or call polylogue_ensure once per session, then sync_pack + bridge_inbox.
+2. Use polylogue_peers to see other live agents (any provider) in this room.
+3. Log material conclusions with polylogue_say (durable) and/or polylogue_bridge_send (live).
+4. Prefer auto-target when a single peer is live; use broadcast=true for the whole room.
+5. Before overwriting shared files: polylogue_file_read then polylogue_file_assert.
 6. Never put secrets in journal or bridge messages.
+
+Prompts: polylogue_cohesion, polylogue_turn_start. Resources: polylogue://sync-pack, status, presence, peers.
 """
 
 
@@ -569,3 +573,213 @@ def memory_append(text: str, *, cwd: str | None = None) -> dict[str, Any]:
     block = prev.rstrip() + "\n" + text.strip() + "\n"
     ws.atomic_write_text(mp, block)
     return {"ok": True, "path": str(mp), "bytes": len(block.encode("utf-8"))}
+
+
+def context_set(text: str, *, cwd: str | None = None) -> dict[str, Any]:
+    root = require_root(cwd)
+    cp = ws.context_path(root)
+    body = text if text.endswith("\n") else text + "\n"
+    ws.atomic_write_text(cp, body)
+    return {"ok": True, "path": str(cp), "bytes": len(body.encode("utf-8"))}
+
+
+def subagent_list(*, parent: str | None = None, cwd: str | None = None) -> dict[str, Any]:
+    root = require_root(cwd)
+    actors = []
+    for a in ws.load_presence(root).get("actors", []):
+        if a.get("kind") != "subagent":
+            continue
+        if parent and a.get("parent_id") != parent:
+            continue
+        actors.append(a)
+    return {"count": len(actors), "subagents": actors}
+
+
+def subagent_add(
+    *,
+    parent_id: str,
+    sub_id: str,
+    label: str | None = None,
+    state: str = "reading",
+    cwd_path: str | None = None,
+    note: str | None = None,
+    path_specs: list[str] | None = None,
+    journal: bool = True,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    root = require_root(cwd)
+    if state not in ("idle", "reading", "editing"):
+        raise ValueError("state must be idle|reading|editing")
+    paths = [ws.parse_path_role(s) for s in path_specs] if path_specs else []
+    row = ws.upsert_actor(
+        root,
+        actor_id=sub_id,
+        kind="subagent",
+        parent_id=parent_id,
+        label=label,
+        state=state,  # type: ignore[arg-type]
+        cwd=cwd_path,
+        paths=paths,
+        note=note,
+    )
+    if journal:
+        touch_participant(root, parent_id)
+        snap = {
+            "kind": row.get("kind"),
+            "state": row.get("state"),
+            "paths": row.get("paths"),
+            "parent_id": parent_id,
+            "note": (row.get("note") or "")[:200],
+        }
+        append_event(
+            root,
+            event_line(
+                type="presence",
+                participant_id=sub_id,
+                summary=json.dumps(snap, ensure_ascii=False),
+            ),
+        )
+    return row
+
+
+def subagent_remove(*, parent_id: str, sub_id: str, cwd: str | None = None) -> dict[str, Any]:
+    root = require_root(cwd)
+    if not ws.clear_subagent(root, parent_id, sub_id):
+        raise ValueError(f"subagent not found: parent={parent_id!r} id={sub_id!r}")
+    return {"ok": True, "cleared": sub_id, "parent_id": parent_id}
+
+
+def scratch_dir(*, participant_id: str | None = None, cwd: str | None = None) -> dict[str, Any]:
+    root = require_root(cwd)
+    work = resolve_cwd(cwd)
+    pid = participant_id or resolve_bridge_context(work).participant_id
+    d = ws.scratch_dir_for(root, pid)
+    d.mkdir(parents=True, exist_ok=True)
+    return {"participant_id": pid, "path": str(d.resolve())}
+
+
+def scratch_write(
+    name: str,
+    text: str,
+    *,
+    participant_id: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    root = require_root(cwd)
+    work = resolve_cwd(cwd)
+    pid = participant_id or resolve_bridge_context(work).participant_id
+    ws.validate_scratch_rel(name)
+    dest = ws.scratch_dir_for(root, pid) / name
+    ws.atomic_write_text(dest, text if text.endswith("\n") else text + "\n")
+    return {"ok": True, "path": str(dest.resolve()), "participant_id": pid}
+
+
+def scratch_list(*, cwd: str | None = None) -> dict[str, Any]:
+    root = require_root(cwd)
+    items = [{"participant": name, "files": n} for name, n in ws.list_scratch_files(root)]
+    return {"count": len(items), "scratch": items}
+
+
+def file_read(
+    path: str,
+    *,
+    actor_id: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    root = require_root(cwd)
+    work = resolve_cwd(cwd)
+    aid = actor_id or resolve_bridge_context(work).participant_id
+    touch_participant(root, aid)
+    rec = ft.record_read(root, actor_id=aid, path=path, cwd=work)
+    return {"ok": True, **rec.__dict__}
+
+
+def file_check(
+    *,
+    actor_id: str | None = None,
+    path: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    root = require_root(cwd)
+    work = resolve_cwd(cwd)
+    stale = ft.list_stale(root, actor_id=actor_id, path=path, cwd=work)
+    return {
+        "stale_count": len(stale),
+        "stale": [s.__dict__ for s in stale],
+        "messages": [s.format_message() for s in stale],
+    }
+
+
+def file_assert(
+    path: str,
+    *,
+    actor_id: str | None = None,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    root = require_root(cwd)
+    work = resolve_cwd(cwd)
+    aid = actor_id or resolve_bridge_context(work).participant_id
+    stale = ft.assert_fresh(root, actor_id=aid, path=path, cwd=work)
+    if stale:
+        return {"ok": False, "stale": True, "message": stale.format_message(), **stale.__dict__}
+    return {"ok": True, "stale": False, "path": path, "actor_id": aid}
+
+
+def turn_aware(
+    *,
+    cwd: str | None = None,
+    session: str | None = None,
+    participant_id: str | None = None,
+    lines: int = 40,
+    inbox_limit: int = 50,
+) -> dict[str, Any]:
+    """One-shot: ensure + sync pack + peers + inbox for the start of an agent turn."""
+    ensured = ensure_session(
+        cwd=cwd,
+        session=session,
+        participant_id=participant_id,
+        start_listen=True,
+    )
+    pid = ensured["participant_id"]
+    pack = do_sync_pack(cwd=cwd, lines=lines)
+    peer_info = peers(cwd=cwd, participant_id=pid)
+    inbox = bridge_inbox(cwd=cwd, participant_id=pid, limit=inbox_limit)
+    return {
+        "ok": True,
+        "identity": {
+            "room": ensured["room"],
+            "participant_id": pid,
+            "provider": ensured["provider"],
+            "session_root": ensured["session_root"],
+        },
+        "peers": peer_info,
+        "inbox": inbox,
+        "sync_pack": pack,
+        "listener": ensured.get("listener"),
+    }
+
+
+COHESION_PROMPT = """\
+You are one of several LLM agents coordinating through Polylogue on the same mission.
+
+At the start of every substantive turn:
+1. Call polylogue_turn_aware (or polylogue_ensure + polylogue_sync_pack + polylogue_bridge_inbox).
+2. Read live peers via polylogue_peers — other providers (cursor, claude, opencode, …) may be active.
+3. Incorporate their journal utterances and bridge inbox messages before deciding.
+
+When you finish a meaningful slice of work:
+1. polylogue_say — durable conclusion for the shared journal.
+2. polylogue_bridge_send — live ping to peers (broadcast or auto-target if one peer).
+3. Update presence / context / memory when the shared picture changed.
+
+Never put secrets in journal or bridge messages. Prefer inspectable Markdown and short handoffs.
+"""
+
+
+TURN_START_PROMPT = """\
+Start-of-turn Polylogue checklist:
+1. polylogue_turn_aware — join room, load sync pack, poll bridge inbox, list peers.
+2. If inbox has messages or peers are live, acknowledge them before new work.
+3. If editing files other agents may touch, polylogue_file_read then polylogue_file_assert before overwrite.
+4. After work: polylogue_say + optional polylogue_bridge_send + presence update.
+"""

@@ -5,6 +5,7 @@ import json
 import socket
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -234,3 +235,77 @@ def test_bridge_send_to_peer(repo, no_daemon, monkeypatch):
     finally:
         server.stop()
         thread.join(timeout=3)
+
+
+def test_mcp_workspace_file_and_scratch(repo, no_daemon):
+    sess.ensure_session(
+        cwd=str(repo),
+        session="ws-sess",
+        participant_id="cursor",
+        start_listen=False,
+    )
+    target = repo / "tracked.txt"
+    target.write_text("v1\n", encoding="utf-8")
+
+    rec = sess.file_read("tracked.txt", actor_id="cursor", cwd=str(repo))
+    assert rec["ok"] is True
+    assert sess.file_assert("tracked.txt", actor_id="cursor", cwd=str(repo))["ok"] is True
+
+    target.write_text("v2\n", encoding="utf-8")
+    stale = sess.file_check(actor_id="cursor", cwd=str(repo))
+    assert stale["stale_count"] == 1
+    assert sess.file_assert("tracked.txt", actor_id="cursor", cwd=str(repo))["stale"] is True
+
+    sub = sess.subagent_add(
+        parent_id="cursor",
+        sub_id="explore-1",
+        label="Explore",
+        path_specs=["src/:read"],
+        cwd=str(repo),
+    )
+    assert sub["id"] == "explore-1"
+    assert sess.subagent_list(parent="cursor", cwd=str(repo))["count"] == 1
+
+    wrote = sess.scratch_write("notes/hello.md", "temp notes", participant_id="cursor", cwd=str(repo))
+    assert Path(wrote["path"]).is_file()
+    assert sess.scratch_list(cwd=str(repo))["count"] == 1
+    assert sess.subagent_remove(parent_id="cursor", sub_id="explore-1", cwd=str(repo))["ok"] is True
+
+
+def test_mcp_resources_prompts_and_turn_aware(repo, no_daemon):
+    server = create_server()
+
+    async def run() -> None:
+        async with Client(server) as client:
+            prompts = await client.list_prompts()
+            prompt_names = {p.name for p in prompts.prompts}
+            assert "polylogue_cohesion" in prompt_names
+            assert "polylogue_turn_start" in prompt_names
+
+            resources = await client.list_resources()
+            uris = {str(r.uri) for r in resources.resources}
+            assert "polylogue://sync-pack" in uris
+            assert "polylogue://peers" in uris
+
+            result = await client.call_tool(
+                "polylogue_turn_aware",
+                {
+                    "cwd": str(repo),
+                    "session": "aware-sess",
+                    "participant_id": "cursor",
+                    "lines": 10,
+                },
+            )
+            body = json.loads(result.content[0].text)
+            assert body["ok"] is True
+            assert "Polylogue full sync pack" in body["sync_pack"]
+            assert body["identity"]["participant_id"] == "cursor"
+
+            got = await client.get_prompt("polylogue_cohesion")
+            text = " ".join(
+                (m.content.text if hasattr(m.content, "text") else str(m.content))
+                for m in got.messages
+            )
+            assert "Polylogue" in text
+
+    asyncio.run(run())
