@@ -31,7 +31,32 @@ python3 -m venv .venv && source .venv/bin/activate
 python3 -m pip install -e ".[dev]" 2>/dev/null || python3 -m pip install -e .
 ```
 
-CLI entry points: **`deepiri-polylogue`** (journal + service + bridge) and **`polylogue`** (Redis orchestration package).
+CLI entry points: **`deepiri-polylogue`** (journal + service + bridge), **`deepiri-polylogue-mcp`** (MCP stdio server), and **`polylogue`** (Redis orchestration package).
+
+### MCP (v0.4+)
+
+Install the optional MCP extra and point your host at the stdio server so agents can discover peers and share context without shelling out:
+
+```bash
+python3 -m pip install -e ".[mcp]"
+```
+
+Cursor / Claude Desktop example (`mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "polylogue": {
+      "command": "deepiri-polylogue-mcp",
+      "env": {
+        "POLYLOGUE_MCP_CWD": "/absolute/path/to/your/repo"
+      }
+    }
+  }
+}
+```
+
+Agents call `polylogue_ensure` once, then `polylogue_sync_pack` / `polylogue_peers` / `polylogue_bridge_send` / `polylogue_bridge_inbox` for cross-provider cohesion. Full tool list: [docs/MCP.md](docs/MCP.md).
 
 ### Real-time bridge (v0.3+)
 
@@ -135,6 +160,7 @@ polylogue sync-pack --context-bytes 32000
 ## Documentation
 
 - [Design](docs/DESIGN.md) — model, event taxonomy, storage layout, and threat notes  
+- [MCP](docs/MCP.md) — stdio MCP server for Cursor / Claude / other hosts  
 - [Streaming bridge](docs/STREAMING_BRIDGE.md) — optional native TCP fan-out (`polybridge`)  
 - [Cohesion recipe](examples/cohesion-recipe.md) — practical usage pattern  
 
