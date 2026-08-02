@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "polyproto.h"
@@ -244,7 +245,10 @@ static pid_t spawn_client(const char *path, int port, const char *outfile) {
  * empty stdout and empty stderr. Drives the real polyclient binary.
  */
 static void run_large_relay_case(const char *bridge, const char *client, uint32_t plen) {
-  const char *outfile = "/tmp/polyclient_e2e_out.bin";
+  char outfile[64];
+  // Per-process path: a fixed name means two concurrent runs (CI matrix, or a
+  // developer and a test harness at once) unlink each other's output mid-read.
+  snprintf(outfile, sizeof(outfile), "/tmp/polyclient_e2e_out.%ld.bin", (long)getpid());
   int port = pick_port();
   CHECK(port > 0, "found a free loopback port");
   if (port <= 0) return;
