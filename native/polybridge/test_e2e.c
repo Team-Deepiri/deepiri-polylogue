@@ -74,21 +74,66 @@ static int pick_port(void) {
   return port;
 }
 
+/*
+ * Where the hub's stderr goes for the case currently running. Sending it to
+ * /dev/null, as this used to, made `make test-asan` structurally unable to fail:
+ * a sanitizer diagnostic raised inside polybridge_asan was discarded, and the
+ * step still reported "0 failure(s)". Capture it instead and scan it.
+ */
+static char g_bridge_log[64];
+
+static void bridge_log_path(char *out, size_t cap) {
+  snprintf(out, cap, "/tmp/polybridge_e2e_stderr.%ld.log", (long)getpid());
+}
+
 static pid_t spawn_bridge(const char *path, int port) {
   char ps[16];
   snprintf(ps, sizeof(ps), "%d", port);
+  bridge_log_path(g_bridge_log, sizeof(g_bridge_log));
   pid_t pid = fork();
   if (pid < 0) return -1;
   if (pid == 0) {
-    int devnull = open("/dev/null", O_WRONLY);
-    if (devnull >= 0) {
-      dup2(devnull, STDERR_FILENO);
-      close(devnull);
+    int log = open(g_bridge_log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (log >= 0) {
+      dup2(log, STDERR_FILENO);
+      close(log);
     }
     execl(path, path, "-p", ps, (char *)NULL);
     _exit(127);
   }
   return pid;
+}
+
+/*
+ * A sanitizer inside the hub reports on the hub's stderr and then aborts the hub,
+ * not this process. Neither is visible to a test that only inspects its own
+ * sockets, so check both: scan the captured log for the shapes ASan, UBSan and
+ * LeakSanitizer use, and treat an abort as a failure even when the socket-level
+ * assertions passed.
+ */
+static int bridge_reported_error(pid_t bridge, int sent_signal) {
+  int bad = 0;
+  FILE *f = fopen(g_bridge_log, "r");
+  if (f) {
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+      if (strstr(line, "runtime error") || strstr(line, "ERROR: AddressSanitizer") ||
+          strstr(line, "ERROR: LeakSanitizer") || strstr(line, "SUMMARY: ")) {
+        fprintf(stderr, "    FAIL: sanitizer report from polybridge: %s", line);
+        bad = 1;
+      }
+    }
+    fclose(f);
+  }
+  int st = 0;
+  if (bridge > 0 && waitpid(bridge, &st, WNOHANG) == bridge) {
+    if (WIFSIGNALED(st) && WTERMSIG(st) != sent_signal) {
+      fprintf(stderr, "    FAIL: polybridge died on signal %d\n", WTERMSIG(st));
+      bad = 1;
+    }
+  }
+  remove(g_bridge_log);
+  return bad;
 }
 
 /* Connect and send HELLO; retries while the bridge is still starting up. */
@@ -229,6 +274,7 @@ static void run_case(const char *bridge, uint32_t plen) {
 
   close(rx);
   kill(bp, SIGKILL);
+  CHECK(!bridge_reported_error(bp, SIGKILL), "polybridge clean under sanitizers");
   waitpid(bp, NULL, 0);
 }
 
@@ -318,6 +364,122 @@ static void run_large_relay_case(const char *bridge, const char *client, uint32_
   unlink(outfile);
 }
 
+/*
+ * The polite variant above half-closes and drains, so the kernel emits FIN and the
+ * hub never sees POLLERR. That is the sequence polyclient --send-only performs, but
+ * it cannot exercise the other loss path: a peer that simply calls close() while the
+ * hub's PEER_UP announcement sits unread in its receive queue. The kernel then sends
+ * RST, and Linux reports POLLIN|POLLERR|POLLHUP (0x19) with the peer's bytes still
+ * readable. A hub that closes on POLLERR before draining throws those bytes away.
+ *
+ * SO_LINGER{on,0} forces the reset deterministically rather than depending on whether
+ * unread data happens to be queued. Keep the payload small: once the sender has more
+ * outstanding than the socket buffers hold, an RST discards data at the TCP layer and
+ * no hub-side ordering can recover it.
+ */
+static void run_bare_close_case(const char *bridge, uint32_t plen) {
+  int port = pick_port();
+  CHECK(port > 0, "found a free loopback port");
+  if (port <= 0) return;
+
+  pid_t bp = spawn_bridge(bridge, port);
+  CHECK(bp > 0, "spawned polybridge");
+  if (bp <= 0) return;
+
+  int rx = connect_peer(port, "receiver");
+  CHECK(rx >= 0, "receiver connected and sent HELLO");
+  if (rx < 0) {
+    kill(bp, SIGKILL);
+    waitpid(bp, NULL, 0);
+    return;
+  }
+  msleep(200);
+
+  int tx = connect_peer(port, "sender");
+  if (tx >= 0) {
+    msleep(150); /* let the hub deliver PEER_UP, which the sender never reads */
+    unsigned char *frame = (unsigned char *)malloc(5 + plen);
+    frame[0] = (unsigned char)T_CHUNK;
+    put_u32be(frame + 1, plen);
+    memset(frame + 5, 'Z', plen);
+    size_t off = 0, tot = 5 + plen;
+    while (off < tot) {
+      ssize_t w = write(tx, frame + off, tot - off);
+      if (w <= 0) break;
+      off += (size_t)w;
+    }
+    free(frame);
+    struct linger lg;
+    lg.l_onoff = 1;
+    lg.l_linger = 0;
+    setsockopt(tx, SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+    close(tx); /* RST, not FIN */
+  }
+
+  int got = await_relay(rx, plen);
+  char msg[128];
+  snprintf(msg, sizeof(msg), "%u-byte chunk survives a bare close (RST)", plen);
+  CHECK(got, msg);
+  printf("%-4s e2e bare-close RST, payload=%u\n", got ? "ok" : "FAIL", plen);
+
+  close(rx);
+  kill(bp, SIGKILL);
+  CHECK(!bridge_reported_error(bp, SIGKILL), "polybridge clean under sanitizers");
+  waitpid(bp, NULL, 0);
+}
+
+/*
+ * Everything above open-codes the send-then-close sequence. This runs the real
+ * ./polyclient --send-only, which is what the loss was originally reported against
+ * and what scripts actually invoke. Open-coded imitations drift from the binary
+ * they imitate -- before this, "send-only" appeared in the file only in comments,
+ * so a regression in polyclient's own shutdown path would not have been caught here.
+ */
+static void run_send_only_case(const char *bridge, const char *client) {
+  int port = pick_port();
+  CHECK(port > 0, "found a free loopback port");
+  if (port <= 0) return;
+
+  pid_t bp = spawn_bridge(bridge, port);
+  CHECK(bp > 0, "spawned polybridge");
+  if (bp <= 0) return;
+
+  int rx = connect_peer(port, "receiver");
+  CHECK(rx >= 0, "receiver connected and sent HELLO");
+  if (rx < 0) {
+    kill(bp, SIGKILL);
+    waitpid(bp, NULL, 0);
+    return;
+  }
+  msleep(200);
+
+  static const char msg[] = "send-only-payload";
+  char ps[16];
+  snprintf(ps, sizeof(ps), "%d", port);
+  pid_t cp = fork();
+  if (cp == 0) {
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+      dup2(devnull, STDOUT_FILENO);
+      close(devnull);
+    }
+    execl(client, client, "--send-only", "127.0.0.1", ps, "s", "S", "x", msg, (char *)NULL);
+    _exit(127);
+  }
+  int cst = 0;
+  if (cp > 0) waitpid(cp, &cst, 0);
+  CHECK(cp > 0 && WIFEXITED(cst) && WEXITSTATUS(cst) == 0, "polyclient --send-only exited 0");
+
+  int got = await_relay(rx, (uint32_t)(sizeof(msg) - 1));
+  CHECK(got, "chunk from the real polyclient --send-only is relayed");
+  printf("%-4s e2e real polyclient --send-only\n", got ? "ok" : "FAIL");
+
+  close(rx);
+  kill(bp, SIGKILL);
+  CHECK(!bridge_reported_error(bp, SIGKILL), "polybridge clean under sanitizers");
+  waitpid(bp, NULL, 0);
+}
+
 int main(int argc, char **argv) {
   if (argc < 3) {
     fprintf(stderr, "usage: %s ./polybridge ./polyclient\n", argv[0]);
@@ -330,7 +492,9 @@ int main(int argc, char **argv) {
    * landed by the second one. Both were lost before the fix. */
   run_case(argv[1], 16);
   run_case(argv[1], 100000);
+  run_bare_close_case(argv[1], 64);
   run_large_relay_case(argv[1], argv[2], 100000);
+  run_send_only_case(argv[1], argv[2]);
 
   printf("\n%d failure(s)\n", failures);
   return failures ? 1 : 0;
