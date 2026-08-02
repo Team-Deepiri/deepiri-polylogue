@@ -3,16 +3,8 @@
  *
  * What this does: multiplex opaque framed chunks among N TCP peers in real time.
  * What this does NOT do: read vendor chat UIs. Each LLM surface needs a thin
- * adapter that opens localhost:PORT and speaks the wire protocol below.
- *
- * Wire (client -> server):
- *   HELLO 0x01 | u16be id_len | u16be label_len | u16be prov_len | id | label | prov
- *   CHUNK 0x02 | u32be payload_len | payload
- *
- * Wire (server -> client):
- *   PEER_UP   0x81 | u16be slot | u16be id_len | id | u16be label_len | label | u16be prov_len | prov
- *   PEER_DOWN 0x82 | u16be slot | u16be id_len | id
- *   RELAY     0x83 | u16be from_slot | u32be len | payload   (payload = peer's CHUNK bytes)
+ * adapter that opens localhost:PORT and speaks the wire protocol, which lives
+ * in polyproto.h (and docs/STREAMING_BRIDGE.md). This file is the event loop.
  */
 
 #define _GNU_SOURCE
@@ -29,35 +21,15 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include "polyproto.h"
+
 #define MAX_PEERS 64
-#define MAX_CHUNK (1u << 20)
-#define MAX_NAME 256
-#define INBUF_CAP (MAX_CHUNK + 64)
 
-#define T_HELLO 0x01u
-#define T_CHUNK 0x02u
-#define S_PEER_UP 0x81u
-#define S_PEER_DOWN 0x82u
-#define S_RELAY 0x83u
-
-typedef struct {
-  int fd;
-  int alive;
-  int ready; /* hello complete */
-  uint16_t slot;
-  char id[MAX_NAME];
-  char label[MAX_NAME];
-  char prov[MAX_NAME];
-  unsigned char *in;
-  size_t in_len;
-  size_t in_cap;
-  /* framed parse: waiting for more bytes */
-  int phase; /* 0=need type, 1=hello body, 2=chunk len, 3=chunk body */
-  unsigned char hdr[16];
-  size_t hdr_got;
-  uint32_t want_chunk;
-  uint16_t hid, hlab, hpr;
-} Peer;
+/* read_more outcomes: EOF is not an error, it means "flush, then close". */
+#define RM_ERR (-1)
+#define RM_RETRY 0
+#define RM_DATA 1
+#define RM_EOF 2
 
 static void die(const char *msg) {
   perror(msg);
@@ -81,114 +53,26 @@ static ssize_t write_all(int fd, const void *buf, size_t len) {
 
 static int read_more(Peer *p) {
   if (p->in_len >= p->in_cap) {
-    if (p->in_cap >= INBUF_CAP) return -1;
+    if (p->in_cap >= INBUF_CAP) return RM_ERR;
     size_t ncap = p->in_cap ? p->in_cap * 2 : 4096;
     if (ncap > INBUF_CAP) ncap = INBUF_CAP;
     unsigned char *n = realloc(p->in, ncap);
-    if (!n) return -1;
+    if (!n) return RM_ERR;
     p->in = n;
     p->in_cap = ncap;
   }
   ssize_t r = read(p->fd, p->in + p->in_len, p->in_cap - p->in_len);
   if (r < 0) {
-    if (errno == EINTR) return 0;
-    return -1;
+    if (errno == EINTR) return RM_RETRY;
+    return RM_ERR;
   }
-  if (r == 0) return -1;
+  if (r == 0) return RM_EOF;
   p->in_len += (size_t)r;
-  return 1;
-}
-
-static void consume(Peer *p, size_t n) {
-  if (n >= p->in_len) {
-    p->in_len = 0;
-    return;
-  }
-  memmove(p->in, p->in + n, p->in_len - n);
-  p->in_len -= n;
-}
-
-static int u16be(const unsigned char *b) {
-  return (int)((b[0] << 8) | b[1]);
-}
-
-static uint32_t u32be(const unsigned char *b) {
-  return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-static void put_u16be(unsigned char *d, uint16_t v) {
-  d[0] = (unsigned char)((v >> 8) & 0xff);
-  d[1] = (unsigned char)(v & 0xff);
-}
-
-static void put_u32be(unsigned char *d, uint32_t v) {
-  d[0] = (unsigned char)((v >> 24) & 0xff);
-  d[1] = (unsigned char)((v >> 16) & 0xff);
-  d[2] = (unsigned char)((v >> 8) & 0xff);
-  d[3] = (unsigned char)(v & 0xff);
+  return RM_DATA;
 }
 
 static int send_frame(int fd, const unsigned char *buf, size_t len) {
   return write_all(fd, buf, len) < 0 ? -1 : 0;
-}
-
-static int build_peer_up(unsigned char *out, size_t *olen, uint16_t slot, const Peer *info) {
-  size_t idl = strlen(info->id);
-  size_t lb = strlen(info->label);
-  size_t pr = strlen(info->prov);
-  if (idl > 65535 || lb > 65535 || pr > 65535) return -1;
-  size_t need = 1 + 2 + 2 + idl + 2 + lb + 2 + pr;
-  if (need > MAX_CHUNK) return -1;
-  unsigned char *w = out;
-  *w++ = S_PEER_UP;
-  put_u16be(w, slot);
-  w += 2;
-  put_u16be(w, (uint16_t)idl);
-  w += 2;
-  memcpy(w, info->id, idl);
-  w += idl;
-  put_u16be(w, (uint16_t)lb);
-  w += 2;
-  memcpy(w, info->label, lb);
-  w += lb;
-  put_u16be(w, (uint16_t)pr);
-  w += 2;
-  memcpy(w, info->prov, pr);
-  w += pr;
-  *olen = (size_t)(w - out);
-  return 0;
-}
-
-static int build_peer_down(unsigned char *out, size_t *olen, uint16_t slot, const char *id) {
-  size_t idl = strlen(id);
-  if (idl > 65535) return -1;
-  unsigned char *w = out;
-  *w++ = S_PEER_DOWN;
-  put_u16be(w, slot);
-  w += 2;
-  put_u16be(w, (uint16_t)idl);
-  w += 2;
-  memcpy(w, id, idl);
-  w += idl;
-  *olen = (size_t)(w - out);
-  return 0;
-}
-
-static int build_relay(unsigned char *out, size_t *olen, uint16_t from_slot, const unsigned char *payload,
-                       uint32_t plen) {
-  if (plen > MAX_CHUNK) return -1;
-  size_t need = 1 + 2 + 4 + plen;
-  if (need > MAX_CHUNK + 16) return -1;
-  unsigned char *w = out;
-  *w++ = S_RELAY;
-  put_u16be(w, from_slot);
-  w += 2;
-  put_u32be(w, plen);
-  w += 4;
-  memcpy(w, payload, plen);
-  w += plen;
-  *olen = (size_t)(w - out);
-  return 0;
 }
 
 static void close_peer(Peer *peers, int n, int idx);
@@ -238,7 +122,7 @@ static void announce_peer_down(Peer *peers, int n, int gone_idx) {
 
 static void relay_chunk(Peer *peers, int n, int from_idx, const unsigned char *payload, uint32_t plen) {
   size_t flen;
-  size_t need = 11u + (size_t)plen;
+  size_t need = RELAY_HDR + (size_t)plen;
   unsigned char *buf = (unsigned char *)malloc(need);
   if (!buf) return;
   if (build_relay(buf, &flen, peers[from_idx].slot, payload, plen) != 0) {
@@ -267,90 +151,20 @@ static void close_peer(Peer *peers, int n, int idx) {
   p->hdr_got = 0;
 }
 
-static int process_peer(Peer *peers, int n, int idx) {
+/* Sink handed to process_peer: ctx is the peers array. */
+static void hub_on_hello(void *ctx, int idx) {
+  Peer *peers = (Peer *)ctx;
   Peer *p = &peers[idx];
-  while (1) {
-    if (p->phase == 0) {
-      if (p->in_len < 1) return 0;
-      unsigned char t = p->in[0];
-      if (t != T_HELLO && t != T_CHUNK) {
-        fprintf(stderr, "[polybridge] bad type 0x%02x from slot %d\n", t, idx);
-        return -1;
-      }
-      if (t == T_HELLO) {
-        p->phase = 1;
-        p->hdr_got = 0;
-      } else {
-        if (!p->ready) return -1;
-        p->phase = 2;
-        p->hdr_got = 0;
-      }
-      consume(p, 1);
-      continue;
-    }
-    if (p->phase == 1) {
-      /* hello: 3xu16 + strings */
-      if (p->hdr_got < 6) {
-        size_t need = 6 - p->hdr_got;
-        if (p->in_len < need) return 0;
-        memcpy(p->hdr + p->hdr_got, p->in, need);
-        p->hdr_got += need;
-        consume(p, need);
-      }
-      if (p->hdr_got == 6) {
-        p->hid = (uint16_t)u16be(p->hdr);
-        p->hlab = (uint16_t)u16be(p->hdr + 2);
-        p->hpr = (uint16_t)u16be(p->hdr + 4);
-        if (p->hid == 0 || p->hid >= MAX_NAME || p->hlab >= MAX_NAME || p->hpr >= MAX_NAME) return -1;
-        p->want_chunk = (uint32_t)(p->hid + p->hlab + p->hpr);
-        p->phase = 11;
-        p->hdr_got = 0;
-      }
-      continue;
-    }
-    if (p->phase == 11) {
-      if (p->in_len < p->want_chunk) return 0;
-      memcpy(p->id, p->in, p->hid);
-      p->id[p->hid] = 0;
-      memcpy(p->label, p->in + p->hid, p->hlab);
-      p->label[p->hlab] = 0;
-      memcpy(p->prov, p->in + p->hid + p->hlab, p->hpr);
-      p->prov[p->hpr] = 0;
-      consume(p, p->want_chunk);
-      p->slot = (uint16_t)idx;
-      p->ready = 1;
-      p->phase = 0;
-      fprintf(stderr, "[polybridge] HELLO slot=%d id=%s label=%s prov=%s\n", idx, p->id, p->label, p->prov);
-      dedupe_id(peers, n, idx);
-      announce_peer_up(peers, n, idx);
-      continue;
-    }
-    if (p->phase == 2) {
-      if (p->hdr_got < 4) {
-        size_t need = 4 - p->hdr_got;
-        if (p->in_len < need) return 0;
-        memcpy(p->hdr + p->hdr_got, p->in, need);
-        p->hdr_got += need;
-        consume(p, need);
-      }
-      if (p->hdr_got == 4) {
-        p->want_chunk = u32be(p->hdr);
-        if (p->want_chunk > MAX_CHUNK) return -1;
-        p->phase = 3;
-        p->hdr_got = 0;
-      }
-      continue;
-    }
-    if (p->phase == 3) {
-      if (p->in_len < p->want_chunk) return 0;
-      relay_chunk(peers, n, idx, p->in, p->want_chunk);
-      consume(p, p->want_chunk);
-      p->phase = 0;
-      continue;
-    }
-    return -1;
-  }
+  fprintf(stderr, "[polybridge] HELLO slot=%d id=%s label=%s prov=%s\n", idx, p->id, p->label, p->prov);
+  dedupe_id(peers, MAX_PEERS, idx);
+  announce_peer_up(peers, MAX_PEERS, idx);
 }
+
+static void hub_on_chunk(void *ctx, int idx, const unsigned char *payload, uint32_t plen) {
+  relay_chunk((Peer *)ctx, MAX_PEERS, idx, payload, plen);
+}
+
+static const HubSink hub_sink = {hub_on_hello, hub_on_chunk};
 
 static int find_free(Peer *peers, int n) {
   for (int i = 0; i < n; i++)
@@ -464,17 +278,29 @@ int main(int argc, char **argv) {
         }
       }
       if (fi < 0) continue;
-      if (fds[fi].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      if (fds[fi].revents & (POLLERR | POLLNVAL)) {
         close_peer(peers, MAX_PEERS, i);
         continue;
       }
-      if (fds[fi].revents & POLLIN) {
+      /* Drain before honouring a hangup. BSD/macOS poll(2) reports POLLIN and
+       * POLLHUP together while unread bytes are still queued, so closing on
+       * POLLHUP first threw away frames a peer had already sent -- exactly the
+       * write-then-close pattern --send-only uses. Reading until EOF is
+       * spin-free: a hung-up socket yields its backlog, then 0. */
+      if (fds[fi].revents & (POLLIN | POLLHUP)) {
         int rr = read_more(&peers[i]);
-        if (rr < 0) {
+        if (rr == RM_ERR) {
           close_peer(peers, MAX_PEERS, i);
           continue;
         }
-        if (process_peer(peers, MAX_PEERS, i) < 0) {
+        if (process_peer(&peers[i], i, &hub_sink, peers) < 0) {
+          close_peer(peers, MAX_PEERS, i);
+          continue;
+        }
+        if (rr == RM_EOF) {
+          if (peers[i].in_len)
+            fprintf(stderr, "[polybridge] slot %d closed mid-frame, %zu byte(s) dropped\n", i,
+                    peers[i].in_len);
           close_peer(peers, MAX_PEERS, i);
           continue;
         }
