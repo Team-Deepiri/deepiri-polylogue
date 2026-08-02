@@ -5,6 +5,19 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Protocol violations are the normal case under fuzzing, where these two
+ * diagnostics would drown the run. The fuzz targets define POLYPROTO_QUIET so
+ * the noise never reaches fd 2 in the first place. Silencing it here rather
+ * than redirecting stderr in the harness matters: fd 2 is also where the
+ * sanitizers and libFuzzer report, and a harness that captures it hides the
+ * crash it exists to find. */
+#ifdef POLYPROTO_QUIET
+#define POLYPROTO_WARN(...) ((void)0)
+#else
+#define POLYPROTO_WARN(...) fprintf(stderr, __VA_ARGS__)
+#endif
+
+
 void consume(Peer *p, size_t n) {
   if (n >= p->in_len) {
     p->in_len = 0;
@@ -99,7 +112,7 @@ int process_peer(Peer *p, int idx, const HubSink *sink, void *ctx) {
       if (p->in_len < 1) return 0;
       unsigned char t = p->in[0];
       if (t != T_HELLO && t != T_CHUNK) {
-        fprintf(stderr, "[polybridge] bad type 0x%02x from slot %d\n", t, idx);
+        POLYPROTO_WARN("[polybridge] bad type 0x%02x from slot %d\n", t, idx);
         return -1;
       }
       if (t == T_HELLO) {
@@ -227,7 +240,7 @@ size_t polyclient_parse(const unsigned char *buf, size_t len, relay_cb on_relay,
       off += RELAY_HDR + (size_t)plen;
       continue;
     }
-    fprintf(stderr, "[polyclient] unknown byte 0x%02x, skipping\n", t);
+    POLYPROTO_WARN("[polyclient] unknown byte 0x%02x, skipping\n", t);
     off++;
   }
   return off;

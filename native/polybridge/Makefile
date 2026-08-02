@@ -33,14 +33,14 @@ test-asan: polyproto.c polyproto.h test_polyproto.c test_e2e.c polybridge.c poly
 # Real libFuzzer. Apple Command Line Tools ship no libclang_rt.fuzzer runtime,
 # so this needs Linux or Homebrew LLVM; use fuzz-standalone elsewhere.
 fuzz: fuzz/fuzz_frames.c fuzz/fuzz_client.c polyproto.c
-	$(CC) $(CFLAGS) -fsanitize=fuzzer,address,undefined -g -o fuzz_frames fuzz/fuzz_frames.c polyproto.c
-	$(CC) $(CFLAGS) -fsanitize=fuzzer,address,undefined -g -o fuzz_client fuzz/fuzz_client.c polyproto.c
+	$(CC) $(CFLAGS) -fsanitize=fuzzer,address,undefined -DPOLYPROTO_QUIET -g -o fuzz_frames fuzz/fuzz_frames.c polyproto.c
+	$(CC) $(CFLAGS) -fsanitize=fuzzer,address,undefined -DPOLYPROTO_QUIET -g -o fuzz_client fuzz/fuzz_client.c polyproto.c
 
 # Same LLVMFuzzerTestOneInput entry points, driven by our own main so the
 # harnesses still run under ASan/UBSan where libFuzzer is unavailable.
 fuzz-standalone: fuzz/fuzz_frames.c fuzz/fuzz_client.c fuzz/standalone_main.c polyproto.c
-	$(CC) $(CFLAGS) $(SANFLAGS) -o fuzz_frames_standalone fuzz/fuzz_frames.c fuzz/standalone_main.c polyproto.c
-	$(CC) $(CFLAGS) $(SANFLAGS) -o fuzz_client_standalone fuzz/fuzz_client.c fuzz/standalone_main.c polyproto.c
+	$(CC) $(CFLAGS) $(SANFLAGS) -DPOLYPROTO_QUIET -o fuzz_frames_standalone fuzz/fuzz_frames.c fuzz/standalone_main.c polyproto.c
+	$(CC) $(CFLAGS) $(SANFLAGS) -DPOLYPROTO_QUIET -o fuzz_client_standalone fuzz/fuzz_client.c fuzz/standalone_main.c polyproto.c
 
 clean:
 	rm -f polybridge polyclient test_polyproto test_e2e \

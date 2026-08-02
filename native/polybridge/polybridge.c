@@ -278,16 +278,27 @@ int main(int argc, char **argv) {
         }
       }
       if (fi < 0) continue;
-      if (fds[fi].revents & (POLLERR | POLLNVAL)) {
+      /* POLLNVAL means the descriptor is not open at all: there is nothing to
+       * drain and read() would only tell us the same thing. Everything else --
+       * POLLIN, POLLHUP, POLLERR -- goes to the read branch first.
+       *
+       * Draining before honouring a hangup matters on BSD/macOS, where poll(2)
+       * reports POLLIN|POLLHUP together while unread bytes are still queued.
+       * Draining before honouring an *error* matters on Linux: a peer that
+       * close()s with unread data in its own receive queue makes the kernel
+       * send RST, and Linux then reports POLLIN|POLLERR|POLLHUP (0x19) with the
+       * peer's bytes still readable. Closing on POLLERR first discarded frames
+       * that were sitting in the socket -- exactly the write-then-close loss
+       * this file is meant to fix, on the platform CI and deployment run on.
+       *
+       * This is spin-free either way: read_more() maps read()==0 to RM_EOF and
+       * read()<0 to RM_ERR, so a reset socket yields its backlog and then closes
+       * on ECONNRESET rather than being polled forever. */
+      if (fds[fi].revents & POLLNVAL) {
         close_peer(peers, MAX_PEERS, i);
         continue;
       }
-      /* Drain before honouring a hangup. BSD/macOS poll(2) reports POLLIN and
-       * POLLHUP together while unread bytes are still queued, so closing on
-       * POLLHUP first threw away frames a peer had already sent -- exactly the
-       * write-then-close pattern --send-only uses. Reading until EOF is
-       * spin-free: a hung-up socket yields its backlog, then 0. */
-      if (fds[fi].revents & (POLLIN | POLLHUP)) {
+      if (fds[fi].revents & (POLLIN | POLLHUP | POLLERR)) {
         int rr = read_more(&peers[i]);
         if (rr == RM_ERR) {
           close_peer(peers, MAX_PEERS, i);
