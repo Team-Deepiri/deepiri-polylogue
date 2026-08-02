@@ -43,6 +43,22 @@ make
 ./polybridge -h
 ```
 
+## Tests
+
+The wire codec lives in `polyproto.c`, split out of the event loop so it can be
+driven from a plain buffer with no sockets involved.
+
+```bash
+make test         # frame-parser unit tests + end-to-end socket tests
+make test-asan    # the same, under AddressSanitizer/UBSan
+make fuzz         # libFuzzer harnesses (needs Linux or Homebrew LLVM)
+make fuzz-standalone   # same harnesses, plain ASan/UBSan driver, runs anywhere
+```
+
+`RELAY_HDR` in `polyproto.h` is the single definition of the RELAY header size
+(7 bytes). Sizing that frame independently in the client is what caused the
+message loss fixed in this directory's history — derive it, do not restate it.
+
 ## Smoke test (two terminals)
 
 Terminal A (listener):
