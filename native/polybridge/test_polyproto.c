@@ -101,7 +101,10 @@ static int feed(Peer *p, const unsigned char *d, size_t n, Rec *r) {
     p->in = nb;
     p->in_cap = ncap;
   }
-  memcpy(p->in + p->in_len, d, n);
+  /* A zero-length append never grows the buffer, so p->in can still be NULL here.
+   * memcpy's parameters are declared non-null, and passing NULL is undefined even
+   * when n is 0 -- UBSan flags it once it is allowed to stop on errors. */
+  if (n) memcpy(p->in + p->in_len, d, n);
   p->in_len += n;
   return process_peer(p, 0, &rec_sink, r);
 }

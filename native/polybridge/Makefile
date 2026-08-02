@@ -1,6 +1,9 @@
 CC ?= gcc
 CFLAGS ?= -Wall -Wextra -O2 -std=c99 -D_DEFAULT_SOURCE
-SANFLAGS ?= -fsanitize=address,undefined -fno-omit-frame-pointer -g
+# -fno-sanitize-recover makes UBSan abort instead of printing and continuing. Without
+# it a real error leaves the exit status at 0, so `make test-asan` reported success
+# on undefined behaviour it had already detected.
+SANFLAGS ?= -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g
 
 .PHONY: all clean test test-asan fuzz fuzz-standalone
 
@@ -28,7 +31,8 @@ test-asan: polyproto.c polyproto.h test_polyproto.c test_e2e.c polybridge.c poly
 	$(CC) $(CFLAGS) $(SANFLAGS) -o polybridge_asan polybridge.c polyproto.c
 	$(CC) $(CFLAGS) $(SANFLAGS) -o polyclient_asan polyclient.c polyproto.c
 	./test_polyproto_asan
-	./test_e2e_asan ./polybridge_asan ./polyclient_asan
+	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ASAN_OPTIONS=abort_on_error=1 \
+		./test_e2e_asan ./polybridge_asan ./polyclient_asan
 
 # Real libFuzzer. Apple Command Line Tools ship no libclang_rt.fuzzer runtime,
 # so this needs Linux or Homebrew LLVM; use fuzz-standalone elsewhere.

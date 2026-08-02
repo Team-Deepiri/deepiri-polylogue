@@ -35,6 +35,34 @@ This is the **streaming** counterpart to the on-disk journal: bytes move now, no
 
 Default bind: `127.0.0.1:7847`. Override with `-l` / `-p` or `POLYBRIDGE_BIND` / `POLYBRIDGE_PORT`.
 
+## Disconnecting (required for send-then-exit peers)
+
+A peer that sends and exits must close the connection in this order:
+
+```c
+shutdown(fd, SHUT_WR);                 /* clean FIN */
+while (read(fd, sink, sizeof sink) > 0) { }   /* drain what the hub already sent */
+close(fd);
+```
+
+This is not stylistic. The hub announces `PEER_UP` to every peer that joins, so a
+send-only peer always has unread bytes waiting. Calling `close()` with data still in
+the receive queue makes the kernel send **RST instead of FIN**, and on Linux the hub
+then sees `POLLIN|POLLERR|POLLHUP` (0x19) rather than `POLLIN|POLLHUP`.
+
+The hub drains before acting on either condition, so a reset no longer costs you the
+frames you already sent. But an RST also lets the kernel discard data still in flight:
+past roughly a socket buffer's worth, no hub-side handling can recover it. The orderly
+sequence above avoids the reset entirely and is the only shutdown that is safe for
+arbitrary payload sizes.
+
+`polyclient --send-only` performs exactly this sequence, bounded by a 2 second
+`SO_RCVTIMEO` so a wedged hub cannot hang a script. Third-party peers -- the Go,
+Python and Rust adapters this document invites -- must do the same. `test_e2e` covers
+both a polite half-close and a deliberate bare-close reset, so regressions in either
+path fail the suite.
+
+
 ## Build
 
 ```bash
