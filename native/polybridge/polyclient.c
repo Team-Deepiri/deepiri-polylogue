@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "polyproto.h"
@@ -124,6 +125,22 @@ int main(int argc, char **argv) {
   if (send_hello(fd, id, label, prov) < 0) return 1;
   if (msg && send_chunk(fd, msg, strlen(msg)) < 0) return 1;
   if (send_only) {
+    /* Half-close, then drain, then close. Closing a socket that still has unread
+     * data in its receive queue makes the kernel send RST instead of FIN, and the
+     * hub announces PEER_UP to every peer that joins -- so --send-only always has
+     * unread data. On Linux the hub then sees POLLERR and discards the frames we
+     * just sent, which is precisely the loss this mode is supposed to be safe
+     * from. SHUT_WR delivers a clean FIN; the drain empties the queue so the
+     * close is orderly. Bounded by a receive timeout so a wedged hub cannot hang
+     * a script. */
+    shutdown(fd, SHUT_WR);
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char sink[4096];
+    while (read(fd, sink, sizeof(sink)) > 0) {
+    }
     close(fd);
     return 0;
   }

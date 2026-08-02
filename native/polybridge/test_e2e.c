@@ -186,7 +186,19 @@ static void send_then_close(int port, uint32_t plen) {
     off += (size_t)w;
   }
   free(frame);
-  close(fd); /* immediate FIN, no lingering */
+  /* Mirror polyclient --send-only exactly: half-close, drain the PEER_UP the hub
+   * pushed us, then close. A bare close() here leaves unread data in the receive
+   * queue, which makes the kernel emit RST rather than FIN -- the hub then sees
+   * POLLERR on Linux and drops the chunk we just sent. */
+  shutdown(fd, SHUT_WR);
+  struct timeval tv;
+  tv.tv_sec = 2;
+  tv.tv_usec = 0;
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  char sink[4096];
+  while (read(fd, sink, sizeof(sink)) > 0) {
+  }
+  close(fd);
 }
 
 static void run_case(const char *bridge, uint32_t plen) {
