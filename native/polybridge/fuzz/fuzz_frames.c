@@ -13,6 +13,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "../polyproto.h"
 
@@ -47,16 +49,42 @@ static int fz_append(Peer *p, const unsigned char *d, size_t n) {
   return 0;
 }
 
+
+/* The parsers log protocol violations to stderr, and fuzzing is nothing but
+ * protocol violations. Muting stderr outright -- as this harness used to do with
+ * freopen("/dev/null") -- also silences libFuzzer, which reports its progress,
+ * its statistics and its crash diagnostics on the same stream. A campaign then
+ * looks like it produced nothing whether it found a bug or not. Mute only for
+ * the duration of one parse and restore afterwards. */
+static int fz_saved_stderr = -1;
+static int fz_devnull = -1;
+
+static void fz_mute(void) {
+  if (fz_saved_stderr < 0) {
+    fz_saved_stderr = dup(STDERR_FILENO);
+    fz_devnull = open("/dev/null", O_WRONLY);
+  }
+  if (fz_devnull >= 0) {
+    fflush(stderr);
+    dup2(fz_devnull, STDERR_FILENO);
+  }
+}
+
+static void fz_unmute(void) {
+  if (fz_saved_stderr >= 0) {
+    fflush(stderr);
+    dup2(fz_saved_stderr, STDERR_FILENO);
+  }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
-  static int muted = 0;
-  if (!muted) {
-    /* The parser logs protocol violations; keep the fuzz output readable. */
-    if (!freopen("/dev/null", "w", stderr)) return 0;
-    muted = 1;
+  fz_mute();
+  if (size < 1) {
+    fz_unmute();
+    return 0;
   }
-  if (size < 1) return 0;
 
   /* Bit 0 of the first byte pre-arms the peer, so the CHUNK path is reachable
    * without the input having to spell a valid HELLO first. */
@@ -84,5 +112,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   }
 
   free(p.in);
+  fz_unmute();
   return 0;
 }
