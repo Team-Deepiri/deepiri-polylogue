@@ -360,6 +360,7 @@ static void run_large_relay_case(const char *bridge, const char *client, uint32_
     waitpid(cp, NULL, 0);
   }
   kill(bp, SIGKILL);
+  CHECK(!bridge_reported_error(bp, SIGKILL), "polybridge clean under sanitizers");
   waitpid(bp, NULL, 0);
   unlink(outfile);
 }
@@ -409,6 +410,17 @@ static void run_bare_close_case(const char *bridge, uint32_t plen) {
       off += (size_t)w;
     }
     free(frame);
+    /*
+     * No delay between the write and the reset, deliberately. The state under test
+     * is "bytes delivered to the hub's socket but not yet read", which is what makes
+     * poll report POLLIN|POLLERR together. Inserting even 100 ms here lets the hub
+     * consume the chunk through the ordinary POLLIN path first, and the drain-on-
+     * POLLERR branch is never reached -- measured: with that sleep the case passes
+     * against a hub that has the fix reverted, i.e. it stops testing anything.
+     *
+     * Writing 64 bytes to a connected loopback socket and then resetting queues both
+     * the data and the RST; the kernel does not discard the payload on the way out.
+     */
     struct linger lg;
     lg.l_onoff = 1;
     lg.l_linger = 0;
