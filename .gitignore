@@ -16,3 +16,10 @@ venv/
 # native polybridge (build with `make -C native/polybridge`)
 native/polybridge/polybridge
 native/polybridge/polyclient
+native/polybridge/test_polyproto
+native/polybridge/test_e2e
+native/polybridge/*_asan
+native/polybridge/*_standalone
+native/polybridge/fuzz_frames
+native/polybridge/fuzz_client
+native/polybridge/*.dSYM/

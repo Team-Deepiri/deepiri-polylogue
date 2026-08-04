@@ -9,25 +9,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
-#define T_HELLO 0x01u
-#define T_CHUNK 0x02u
-#define S_PEER_UP 0x81u
-#define S_PEER_DOWN 0x82u
-#define S_RELAY 0x83u
-
-static void put_u16be(unsigned char *d, uint16_t v) {
-  d[0] = (unsigned char)((v >> 8) & 0xff);
-  d[1] = (unsigned char)(v & 0xff);
-}
-
-static void put_u32be(unsigned char *d, uint32_t v) {
-  d[0] = (unsigned char)((v >> 24) & 0xff);
-  d[1] = (unsigned char)((v >> 16) & 0xff);
-  d[2] = (unsigned char)((v >> 8) & 0xff);
-  d[3] = (unsigned char)(v & 0xff);
-}
+#include "polyproto.h"
 
 static ssize_t write_all(int fd, const void *buf, size_t len) {
   const unsigned char *p = (const unsigned char *)buf;
@@ -85,14 +70,6 @@ static int send_chunk(int fd, const void *data, size_t len) {
   return rc;
 }
 
-static uint16_t rd_u16(const unsigned char *b) {
-  return (uint16_t)((b[0] << 8) | b[1]);
-}
-
-static uint32_t rd_u32(const unsigned char *b) {
-  return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
 static void usage(void) {
   fprintf(stderr,
           "usage: polyclient [--send-only] HOST PORT ID LABEL PROVIDER [MESSAGE]\n"
@@ -101,30 +78,12 @@ static void usage(void) {
           "  --send-only: exit after sending (for scripts / token emitters).\n");
 }
 
-static size_t frame_len_peer_up(const unsigned char *p, size_t rem) {
-  if (rem < 3) return 0;
-  size_t o = 1u + 2u;
-  if (rem < o + 2) return 0;
-  uint16_t idl = rd_u16(p + o);
-  o += 2u;
-  if (rem < o + idl + 2) return 0;
-  o += idl;
-  uint16_t lb = rd_u16(p + o);
-  o += 2u;
-  if (rem < o + lb + 2) return 0;
-  o += lb;
-  uint16_t pr = rd_u16(p + o);
-  o += 2u;
-  if (rem < o + pr) return 0;
-  o += pr;
-  return o;
-}
-
-static size_t frame_len_peer_down(const unsigned char *p, size_t rem) {
-  if (rem < 5) return 0;
-  uint16_t idl = rd_u16(p + 3);
-  if (rem < 5u + idl) return 0;
-  return 5u + idl;
+static void print_relay(void *ctx, uint16_t from_slot, const unsigned char *payload, uint32_t plen) {
+  (void)ctx;
+  (void)from_slot;
+  fwrite(payload, 1, plen, stdout);
+  fputc('\n', stdout);
+  fflush(stdout);
 }
 
 int main(int argc, char **argv) {
@@ -166,15 +125,53 @@ int main(int argc, char **argv) {
   if (send_hello(fd, id, label, prov) < 0) return 1;
   if (msg && send_chunk(fd, msg, strlen(msg)) < 0) return 1;
   if (send_only) {
+    /* Half-close, then drain, then close. Closing a socket that still has unread
+     * data in its receive queue makes the kernel send RST instead of FIN, and the
+     * hub announces PEER_UP to every peer that joins -- so --send-only always has
+     * unread data. On Linux the hub then sees POLLERR and discards the frames we
+     * just sent, which is precisely the loss this mode is supposed to be safe
+     * from. SHUT_WR delivers a clean FIN; the drain empties the queue so the
+     * close is orderly. Bounded by a receive timeout so a wedged hub cannot hang
+     * a script. */
+    shutdown(fd, SHUT_WR);
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char sink[4096];
+    while (read(fd, sink, sizeof(sink)) > 0) {
+    }
     close(fd);
     return 0;
   }
 
-  /* Parse server frames: PEER_UP / PEER_DOWN / RELAY */
-  unsigned char rb[65536];
+  /* Parse server frames: PEER_UP / PEER_DOWN / RELAY. The buffer has to be able
+   * to hold the largest legal frame (a RELAY carrying MAX_CHUNK), so it grows on
+   * demand instead of capping at a size the protocol is allowed to exceed. */
+  size_t cap = 65536;
   size_t have = 0;
+  unsigned char *rb = (unsigned char *)malloc(cap);
+  if (!rb) {
+    perror("malloc");
+    return 1;
+  }
   for (;;) {
-    ssize_t r = read(fd, rb + have, sizeof(rb) - have - 1);
+    if (have == cap) {
+      if (cap >= RELAY_HDR + MAX_CHUNK) {
+        fprintf(stderr, "[polyclient] frame exceeds %u-byte protocol limit\n", MAX_CHUNK);
+        break;
+      }
+      size_t ncap = cap * 2;
+      if (ncap > RELAY_HDR + MAX_CHUNK) ncap = RELAY_HDR + MAX_CHUNK;
+      unsigned char *n = (unsigned char *)realloc(rb, ncap);
+      if (!n) {
+        perror("realloc");
+        break;
+      }
+      rb = n;
+      cap = ncap;
+    }
+    ssize_t r = read(fd, rb + have, cap - have);
     if (r < 0) {
       if (errno == EINTR) continue;
       perror("read");
@@ -182,42 +179,13 @@ int main(int argc, char **argv) {
     }
     if (r == 0) break;
     have += (size_t)r;
-    size_t off = 0;
-    while (off < have) {
-      unsigned char *p = rb + off;
-      size_t rem = have - off;
-      if (rem < 1) break;
-      unsigned char t = p[0];
-      if (t == S_PEER_UP) {
-        size_t fl = frame_len_peer_up(p, rem);
-        if (fl == 0) break;
-        off += fl;
-        continue;
-      }
-      if (t == S_PEER_DOWN) {
-        size_t fl = frame_len_peer_down(p, rem);
-        if (fl == 0) break;
-        off += fl;
-        continue;
-      }
-      if (t == S_RELAY) {
-        if (rem < 11) break;
-        uint32_t plen = rd_u32(p + 3);
-        if (rem < 11u + plen) break;
-        fwrite(p + 7, 1, plen, stdout);
-        fputc('\n', stdout);
-        fflush(stdout);
-        off += 11u + plen;
-        continue;
-      }
-      fprintf(stderr, "[polyclient] unknown byte 0x%02x, skipping\n", t);
-      off++;
-    }
+    size_t off = polyclient_parse(rb, have, print_relay, NULL);
     if (off > 0) {
       memmove(rb, rb + off, have - off);
       have -= off;
     }
   }
+  free(rb);
   close(fd);
   return 0;
 }

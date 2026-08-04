@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
+  # dev is where contributor PRs land (see .github/pull_request_template.md in
+  # deepiri-platform); without it here, every PR into dev merged untested.
   pull_request:
-    branches: [main]
+    branches: [main, dev]
+  schedule:
+    # Coverage-guided fuzzing only; see the `fuzz` job.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -27,3 +33,35 @@ jobs:
       # Pin: ruff 0.16+ enables rules that trip existing PolyBridge code.
       - run: pip install "ruff>=0.15.20,<0.16"
       - run: make PYTHON=python lint
+
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (warnings are failures)
+        run: make -C native/polybridge CFLAGS="-Wall -Wextra -Werror -O2 -std=c99 -D_DEFAULT_SOURCE"
+      - name: Unit and end-to-end tests
+        run: make -C native/polybridge test
+      - name: Tests under ASan/UBSan
+        run: make -C native/polybridge test-asan
+      # The fuzz harnesses also build without libFuzzer, against a small
+      # deterministic corpus driver. That runs everywhere and is safe to gate on.
+      - name: Fuzz harnesses, deterministic corpus
+        run: make -C native/polybridge fuzz-standalone && native/polybridge/fuzz_frames_standalone && native/polybridge/fuzz_client_standalone
+
+  # Coverage-guided fuzzing is kept out of the merge gate on purpose: it needs
+  # clang's libFuzzer runtime, which is absent on macOS/BSD dev boxes and has
+  # not been verified on this runner image. A link failure here must never turn
+  # unrelated pull requests red. Promote into `native` once it has run green.
+  fuzz:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fuzz the frame parsers
+        run: |
+          make -C native/polybridge CC=clang fuzz
+          cd native/polybridge
+          ./fuzz_frames -max_total_time=60 -print_final_stats=1
+          ./fuzz_client -max_total_time=60 -print_final_stats=1
