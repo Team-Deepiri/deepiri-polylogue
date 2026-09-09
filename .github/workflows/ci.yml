@@ -1,19 +1,27 @@
 name: CI
 
 on:
-  push:
-    branches: [main, dev]
   # dev is where contributor PRs land (see .github/pull_request_template.md in
   # deepiri-platform); without it here, every PR into dev merged untested.
   pull_request:
     branches: [main, dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
   schedule:
     # Coverage-guided fuzzing only; see the `fuzz` job.
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +32,7 @@ jobs:
       - run: make PYTHON=python test
 
   lint:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +44,7 @@ jobs:
       - run: make PYTHON=python lint
 
   native:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +64,7 @@ jobs:
   # not been verified on this runner image. A link failure here must never turn
   # unrelated pull requests red. Promote into `native` once it has run green.
   fuzz:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     continue-on-error: true
