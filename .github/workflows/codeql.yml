@@ -1,6 +1,13 @@
 name: CodeQL
 
 on:
+  push:
+    branches: [main, dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
   pull_request:
     branches: [main, dev]
     paths-ignore:

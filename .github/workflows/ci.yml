@@ -1,6 +1,13 @@
 name: CI
 
 on:
+  push:
+    branches: [main, dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
   # dev is where contributor PRs land (see .github/pull_request_template.md in
   # deepiri-platform); without it here, every PR into dev merged untested.
   pull_request:
