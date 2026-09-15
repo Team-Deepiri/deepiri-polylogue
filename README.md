@@ -1,5 +1,6 @@
-# Deepiri Polylogue
 
+# Deepiri Polylogue
+<img width="1983" height="793" alt="ChatGPT Image Sep 9, 2026, 01_20_31 PM" src="https://github.com/user-attachments/assets/31882f83-c707-4d78-a3e6-e1af5740eefc" />
 Polylogue is a **filesystem-first shared journal** for coordinating multiple LLM surfaces (different providers, tabs, or tools) on the same mission. Surfaces stay mutually aware through explicit, inspectable files—no proprietary sync bus and no network requirement in the default path.
 
 ## Overview
