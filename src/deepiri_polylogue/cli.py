@@ -66,6 +66,17 @@ def main(argv: list[str] | None = None) -> int:
     br_listen.add_argument("--id", dest="participant_id", default=None)
     br_listen.add_argument("--cwd", type=Path, default=None)
     br_listen.add_argument("--url", default=None)
+    br_listen.add_argument(
+        "--inject",
+        action="store_true",
+        help="On inbound bridge messages, inject into local agent runtime as user input (TTY/agent)",
+    )
+    br_listen.add_argument(
+        "--inject-runtime",
+        default=None,
+        choices=["opencode", "cursor", "claude", "inbox"],
+        help="Runtime for --inject (default: auto-detect)",
+    )
     br_send = br_sub.add_parser("send", help="Send one message through the live bridge")
     br_send.add_argument("--room", default=None)
     br_send.add_argument("--id", dest="participant_id", default=None)
@@ -496,6 +507,8 @@ def _cmd_bridge(args: argparse.Namespace) -> int:
                 participant_id=getattr(args, "participant_id", None),
                 room=getattr(args, "room", None),
                 url=getattr(args, "url", None),
+                inject=bool(getattr(args, "inject", False)),
+                inject_runtime=getattr(args, "inject_runtime", None),
             )
         except KeyboardInterrupt:
             return 0

@@ -20,6 +20,26 @@ def state_paths(participant_id: str) -> tuple[Path, Path]:
     return base / f"polylogue-bridge-{safe}.log", base / f"polylogue-bridge-{safe}-outbox.jsonl"
 
 
+def listener_pid_path(participant_id: str) -> Path:
+    log_path, _ = state_paths(participant_id)
+    return log_path.with_name(log_path.name.replace(".log", "-listen.pid"))
+
+
+def listener_pid_alive(participant_id: str) -> bool:
+    path = listener_pid_path(participant_id)
+    if not path.is_file():
+        return False
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def queue_message(participant_id: str, payload: dict) -> Path:
     _, outbox = state_paths(participant_id)
     outbox.parent.mkdir(parents=True, exist_ok=True)
@@ -64,16 +84,71 @@ async def _outbox_reader(ws: websockets.WebSocketClientProtocol, outbox: Path, l
         offset = len(raw)
 
 
-async def _listen(ws: websockets.WebSocketClientProtocol, log_path: Path) -> None:
+async def _listen(
+    ws: websockets.WebSocketClientProtocol,
+    log_path: Path,
+    *,
+    inject: bool = False,
+    inject_runtime: str | None = None,
+    cwd: Path | None = None,
+) -> None:
     async for raw in ws:
         _log(log_path, f"recv: {raw}")
+        if not inject:
+            continue
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
+            continue
+        msg_type = data.get("type")
+        try:
+            if msg_type == "delegate":
+                # Same process can wake on signed delegates (no separate watch needed)
+                from .delegate import verify_delegate
+                from .runtimes import inject_delegate
 
+                if not verify_delegate(data):
+                    _log(log_path, f"inject skip invalid delegate sig id={data.get('delegate_id')}")
+                    continue
+                result = inject_delegate(data, runtime=inject_runtime)
+                _log(log_path, f"inject delegate: {json.dumps(result, ensure_ascii=False)}")
+                continue
+            text = data.get("text") or data.get("prompt")
+            if not text or not str(text).strip():
+                continue
+            from .runtimes import inject_user_text
 
-async def _run_session(ctx: BridgeContext, url: str, log_path: Path, outbox: Path) -> None:
+            result = inject_user_text(str(text), cwd=cwd, runtime=inject_runtime)
+            _log(log_path, f"inject: {json.dumps(result, ensure_ascii=False)}")
+        except Exception as exc:  # noqa: BLE001 — keep listener alive
+            _log(log_path, f"inject failed: {exc}")
+
+async def _run_session(
+    ctx: BridgeContext,
+    url: str,
+    log_path: Path,
+    outbox: Path,
+    *,
+    inject: bool = False,
+    inject_runtime: str | None = None,
+) -> None:
     uri = f"{url.rstrip('/')}/ws?room={quote(ctx.room)}&id={quote(ctx.participant_id)}"
     async with websockets.connect(uri) as ws:
-        _log(log_path, f"connected room={ctx.room} id={ctx.participant_id}")
-        await asyncio.gather(_listen(ws, log_path), _outbox_reader(ws, outbox, log_path))
+        _log(
+            log_path,
+            f"connected room={ctx.room} id={ctx.participant_id}"
+            + (" inject=on" if inject else ""),
+        )
+        await asyncio.gather(
+            _listen(
+                ws,
+                log_path,
+                inject=inject,
+                inject_runtime=inject_runtime,
+                cwd=ctx.repo_root,
+            ),
+            _outbox_reader(ws, outbox, log_path),
+        )
 
 
 def listen_loop(
@@ -82,18 +157,54 @@ def listen_loop(
     participant_id: str | None = None,
     room: str | None = None,
     url: str | None = None,
+    inject: bool = False,
+    inject_runtime: str | None = None,
 ) -> None:
     ctx = resolve_bridge_context(cwd, participant_id=participant_id, room=room)
     log_path, outbox = state_paths(ctx.participant_id)
-    _log(log_path, f"resolved provider={ctx.provider} room={ctx.room} id={ctx.participant_id} peers={ctx.peers}")
+    # Env override: POLYLOGUE_BRIDGE_INJECT=1 makes listen behave like typed user input
+    env_inject = os.environ.get("POLYLOGUE_BRIDGE_INJECT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "cursor",
+    )
+    if env_inject:
+        inject = True
+        if not inject_runtime and os.environ.get("POLYLOGUE_BRIDGE_INJECT", "").strip().lower() == "cursor":
+            inject_runtime = "cursor"
+    _log(
+        log_path,
+        f"resolved provider={ctx.provider} room={ctx.room} id={ctx.participant_id} "
+        f"peers={ctx.peers} inject={inject}",
+    )
     target_url = url or bridge_url()
+    pid_path = listener_pid_path(ctx.participant_id)
+    try:
+        pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
     async def _main() -> None:
         while True:
             try:
-                await _run_session(ctx, target_url, log_path, outbox)
+                await _run_session(
+                    ctx,
+                    target_url,
+                    log_path,
+                    outbox,
+                    inject=inject,
+                    inject_runtime=inject_runtime,
+                )
             except (websockets.ConnectionClosed, OSError) as exc:
                 _log(log_path, f"disconnected: {exc} — reconnecting in 2s")
                 await asyncio.sleep(2)
 
-    asyncio.run(_main())
+    try:
+        asyncio.run(_main())
+    finally:
+        try:
+            if pid_path.is_file() and pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                pid_path.unlink()
+        except OSError:
+            pass

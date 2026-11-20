@@ -88,6 +88,13 @@ async def _send_async(
     await _send_payload_async(room, participant_id, payload, url=url)
 
 
+def _listener_alive(participant_id: str) -> bool:
+    """True only if this participant has a live bridge listen process (outbox will drain)."""
+    from .listener import listener_pid_alive
+
+    return listener_pid_alive(participant_id)
+
+
 def send_message(
     room: str,
     participant_id: str,
@@ -100,13 +107,13 @@ def send_message(
     payload: dict[str, Any] = {"type": "message", "text": text}
     if to:
         payload["to"] = to
-    if prefer_outbox:
-        from .listener import queue_message, state_paths
+    # Only queue when a listener is actually draining this outbox — otherwise one-shot
+    # `bridge send` would silently sit in a stale outbox file forever.
+    if prefer_outbox and _listener_alive(participant_id):
+        from .listener import queue_message
 
-        _, outbox = state_paths(participant_id)
-        if outbox.exists():
-            queue_message(participant_id, payload)
-            return
+        queue_message(participant_id, payload)
+        return
     _run_sync(_send_async(room, participant_id, text, to=to, url=url))
 
 
@@ -119,13 +126,11 @@ def send_delegate(
     prefer_outbox: bool = True,
 ) -> None:
     wire = {**payload, "type": "delegate"}
-    if prefer_outbox:
-        from .listener import queue_message, state_paths
+    if prefer_outbox and _listener_alive(participant_id):
+        from .listener import queue_message
 
-        _, outbox = state_paths(participant_id)
-        if outbox.exists():
-            queue_message(participant_id, wire)
-            return
+        queue_message(participant_id, wire)
+        return
     _run_sync(_send_payload_async(room, participant_id, wire, url=url))
 
 

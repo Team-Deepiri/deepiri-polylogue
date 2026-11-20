@@ -55,10 +55,12 @@ After `./install.sh`, from any git repo — no env vars, auto-detects room + par
 
 ```bash
 deepiri-polylogue --cwd /path/to/repo init --session myproject
-deepiri-polylogue --cwd /path/to/repo bridge listen    # persistent agent connection
+deepiri-polylogue --cwd /path/to/repo bridge listen --inject   # peer msgs → typed into agent TTY
 deepiri-polylogue --cwd /path/to/repo bridge send --text "ping"
 deepiri-polylogue --cwd /path/to/repo bridge whoami
 ```
+
+With `--inject` (default for MCP `polylogue_ensure` listeners), inbound bridge text is written to the peer's Cursor `agent` terminal as keyboard input — same mechanics as the human typing. Details: [docs/AGENT_INJECT.md](docs/AGENT_INJECT.md).
 
 Service listens on HTTP `7849` and WebSocket bridge `7850`.
 

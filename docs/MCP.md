@@ -69,6 +69,10 @@ Resources: `polylogue://sync-pack`, `polylogue://status`, `polylogue://presence`
 - `polylogue_bridge_status` — room connection stats
 - `polylogue_bridge_send` — live message (`to` or broadcast; auto-target if one peer)
 - `polylogue_bridge_inbox` — poll unread inbound from the listener log
+- `polylogue_ping_peer` — bridge + journal ping (peer `listen --inject` types it as user input)
+- `polylogue_delegate_submit` — signed wake-and-act task for peer `delegate watch`
+
+See also [AGENT_INJECT.md](AGENT_INJECT.md) for TTY / Cursor terminal injection.
 
 ### Journal and workspace
 
