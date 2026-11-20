@@ -1,7 +1,9 @@
 # Agent inject — peer messages as user input
 
-Polylogue can wake a peer Cursor/Claude/OpenCode agent by injecting text into
-their **agent terminal as keyboard input** — the same path as the human typing.
+Polylogue wakes **any** local agent runtime (Cursor `agent`, Claude Code, OpenCode)
+by injecting text into their **terminal as keyboard input** — the same path as the
+human typing. Runtime is auto-detected from live TTYs (`POLYLOGUE_DELEGATE_RUNTIME`
+forces one).
 
 ## Quick setup (two Cursor agent terminals)
 

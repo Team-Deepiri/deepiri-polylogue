@@ -1,9 +1,9 @@
-"""Inject delegated prompts into local agent runtimes (any surface).
+"""Inject prompts into local agent runtimes (Cursor, Claude, OpenCode, …).
 
-Cursor path (priority):
+Priority for every runtime:
   1. Write to the agent TTY as keyboard input (same mechanics as the user typing).
-  2. `agent --resume <chatId>` / `--continue` with the prompt as a new user turn.
-  3. Spawn `agent -p --force` in the workspace cwd.
+  2. Resume / continue the CLI session with the prompt as a new user turn.
+  3. Spawn a one-shot CLI print turn in the workspace cwd.
   4. Fall back to the on-disk delegate inbox.
 """
 from __future__ import annotations
@@ -22,13 +22,27 @@ from .delegate import DelegateRequest, append_inbox, config_dir, format_injected
 
 logger = logging.getLogger(__name__)
 
-_AGENT_CMD_RE = re.compile(r"(?:^|/|\\)(agent|cursor-agent)(?:\s|$)")
+# Match Cursor agent, Claude Code, OpenCode TUI processes on a PTY
+_AGENT_CMD_RE = re.compile(
+    r"(?:^|/|\\)(agent|cursor-agent|claude|opencode)(?:\s|$)",
+    re.IGNORECASE,
+)
 
 
 def detect_local_runtime() -> str:
     forced = os.environ.get("POLYLOGUE_DELEGATE_RUNTIME", "").strip().lower()
     if forced:
         return forced
+    # Prefer whatever is actually on a TTY right now
+    ttys = _list_agent_ttys()
+    for row in ttys:
+        args = row["args"].lower()
+        if "claude" in args.split()[0] or "/claude" in args:
+            return "claude"
+        if "opencode" in args:
+            return "opencode"
+        if "agent" in args or "cursor-agent" in args:
+            return "cursor"
     if shutil.which("opencode"):
         return "opencode"
     if shutil.which("agent") or shutil.which("cursor-agent"):
@@ -57,22 +71,15 @@ def inject_delegate(req: DelegateRequest | dict[str, Any], *, runtime: str | Non
     runtime = runtime or detect_local_runtime()
     prompt = format_injected_prompt(req)
     cwd = Path(req.cwd)
-
-    if runtime == "opencode":
-        return _inject_opencode(prompt, cwd)
-    if runtime == "cursor":
-        return _inject_cursor(prompt, cwd, req)
-    if runtime == "claude":
-        return _inject_claude(prompt, cwd, req)
-    return _inject_inbox(prompt, req)
+    return _inject_any(prompt, cwd, req, runtime=runtime)
 
 
 def inject_user_text(text: str, *, cwd: Path | str | None = None, runtime: str | None = None) -> dict[str, Any]:
     """Inject free-form text as if the human typed it (bridge message → agent turn)."""
     runtime = runtime or detect_local_runtime()
     work = Path(cwd).resolve() if cwd else Path.cwd()
-    # Synthetic delegate-shaped request for shared formatting / inbox
-    fake = {
+    body = text if text.startswith("[") else f"[Polylogue peer]\n\n{text.strip()}"
+    fake: dict[str, Any] = {
         "delegate_id": f"bridge-{int(time.time())}",
         "room": "local",
         "from": "polylogue-bridge",
@@ -84,38 +91,167 @@ def inject_user_text(text: str, *, cwd: Path | str | None = None, runtime: str |
         "ts": "",
         "sig": "",
     }
+    return _inject_any(body, work, fake, runtime=runtime)
+
+
+def _inject_any(
+    prompt: str,
+    cwd: Path,
+    req: DelegateRequest | dict[str, Any],
+    *,
+    runtime: str,
+) -> dict[str, Any]:
+    settings = _workspace_inject_settings(cwd)
+    mode = (
+        os.environ.get("POLYLOGUE_INJECT_MODE", "").strip().lower()
+        or os.environ.get("POLYLOGUE_CURSOR_INJECT", "").strip().lower()
+        or str(settings.get("mode", "auto")).lower()
+    )
+    attempts: list[dict[str, Any]] = []
+
+    # 1) TTY — works for Claude / Cursor / OpenCode interactive sessions alike
+    if mode in ("auto", "tty", "all"):
+        tty = _resolve_tty(cwd, settings, preferred_runtime=runtime)
+        if tty:
+            try:
+                result = _write_tty(tty, prompt)
+                result["runtime"] = runtime
+                attempts.append(result)
+                if isinstance(req, DelegateRequest):
+                    inbox = append_inbox(
+                        req.target,
+                        {"type": "delegate_tty", "tty": tty, "delegate_id": req.delegate_id},
+                    )
+                    result["inbox"] = str(inbox)
+                if mode != "all":
+                    return result
+            except OSError as exc:
+                attempts.append({"method": "tty", "error": str(exc), "tty": tty})
+                logger.warning("%s TTY inject failed (%s): %s", runtime, tty, exc)
+
+    # 2–3) Runtime-specific CLI resume / spawn
+    if mode in ("auto", "resume", "continue", "spawn", "all"):
+        cli = _cli_inject(prompt, cwd, settings, runtime=runtime, mode=mode)
+        if cli:
+            attempts.append(cli)
+            if mode != "all" and cli.get("method") != "none":
+                return cli
+
+    inbox_result = _inject_inbox(prompt, req, runtime=runtime)
+    inbox_result["attempts"] = attempts
+    return inbox_result
+
+
+def _cli_inject(
+    prompt: str,
+    cwd: Path,
+    settings: dict[str, Any],
+    *,
+    runtime: str,
+    mode: str,
+) -> dict[str, Any] | None:
     if runtime == "cursor":
-        return _inject_cursor(text if text.startswith("[") else f"[Polylogue peer]\n\n{text.strip()}", work, fake)
+        return _cli_cursor(prompt, cwd, settings, mode=mode)
     if runtime == "claude":
-        return _inject_claude(text, work, fake)  # type: ignore[arg-type]
+        return _cli_claude(prompt, cwd, settings, mode=mode)
     if runtime == "opencode":
-        return _inject_opencode(text, work)
-    return _inject_inbox(text, fake, runtime="inbox")  # type: ignore[arg-type]
+        return _cli_opencode(prompt, cwd, settings, mode=mode)
+    return None
 
 
-def _inject_opencode(prompt: str, cwd: Path) -> dict[str, Any]:
+def _cli_cursor(prompt: str, cwd: Path, settings: dict[str, Any], *, mode: str) -> dict[str, Any] | None:
+    exe = shutil.which("agent") or shutil.which("cursor-agent")
+    if not exe:
+        return None
+    chat_id = (
+        os.environ.get("POLYLOGUE_CURSOR_CHAT_ID", "").strip()
+        or str(settings.get("chat_id") or "")
+    )
+    use_continue = (
+        os.environ.get("POLYLOGUE_CURSOR_CONTINUE", "").strip() in ("1", "true", "yes")
+        or bool(settings.get("continue"))
+    )
+    if chat_id and mode in ("auto", "resume", "all"):
+        return _spawn([exe, "--resume", chat_id, "-p", "--force", prompt], cwd, "cursor", "resume", chat_id)
+    if (use_continue or mode == "continue") and mode in ("auto", "continue", "all"):
+        return _spawn([exe, "--continue", "-p", "--force", prompt], cwd, "cursor", "continue")
+    if mode in ("auto", "spawn", "all"):
+        return _spawn([exe, "-p", "--force", prompt], cwd, "cursor", "spawn")
+    return None
+
+
+def _cli_claude(prompt: str, cwd: Path, settings: dict[str, Any], *, mode: str) -> dict[str, Any] | None:
+    exe = shutil.which("claude")
+    if not exe:
+        return None
+    session = (
+        os.environ.get("POLYLOGUE_CLAUDE_SESSION", "").strip()
+        or str(settings.get("claude_session") or settings.get("session_id") or "")
+    )
+    use_continue = (
+        os.environ.get("POLYLOGUE_CLAUDE_CONTINUE", "").strip() in ("1", "true", "yes")
+        or bool(settings.get("continue"))
+    )
+    # Prefer bypass in sandboxed / already-trusted agent loops when env set
+    skip = os.environ.get("POLYLOGUE_CLAUDE_SKIP_PERMISSIONS", "").strip() in ("1", "true", "yes")
+    base_flags = ["-p"]
+    if skip:
+        base_flags.append("--dangerously-skip-permissions")
+
+    if session and mode in ("auto", "resume", "all"):
+        return _spawn([exe, "--resume", session, *base_flags, prompt], cwd, "claude", "resume", session)
+    if (use_continue or mode == "continue") and mode in ("auto", "continue", "all"):
+        return _spawn([exe, "--continue", *base_flags, prompt], cwd, "claude", "continue")
+    if mode in ("auto", "spawn", "all"):
+        return _spawn([exe, *base_flags, prompt], cwd, "claude", "spawn")
+    return None
+
+
+def _cli_opencode(prompt: str, cwd: Path, settings: dict[str, Any], *, mode: str) -> dict[str, Any] | None:
     exe = shutil.which("opencode")
     if not exe:
-        raise RuntimeError("opencode not found on PATH")
-    cmd = [exe, "run", "--dir", str(cwd), prompt]
-    logger.info("delegate inject opencode: %s", " ".join(cmd[:4]))
+        return None
+    # `opencode run` is the non-interactive message path
+    if mode in ("auto", "spawn", "resume", "continue", "all"):
+        return _spawn([exe, "run", "--dir", str(cwd), prompt], cwd, "opencode", "spawn")
+    return None
+
+
+def _spawn(
+    cmd: list[str],
+    cwd: Path,
+    runtime: str,
+    method: str,
+    session: str | None = None,
+) -> dict[str, Any]:
+    logger.info("delegate inject %s %s: %s", runtime, method, cmd[0])
     proc = subprocess.Popen(
         cmd,
+        cwd=str(cwd),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
-    return {"runtime": "opencode", "pid": proc.pid, "cmd": cmd[:3] + ["<prompt>"]}
+    return {
+        "runtime": runtime,
+        "method": method,
+        "pid": proc.pid,
+        "session": session,
+        "cmd": [cmd[0], *[c if c != cmd[-1] else "<prompt>" for c in cmd[1:]]],
+    }
 
 
 def _cursor_inject_config() -> dict[str, Any]:
     path = config_dir() / "cursor_inject.json"
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+    # Also accept generic name
+    alt = config_dir() / "inject.json"
+    for candidate in (path, alt):
+        if candidate.is_file():
+            try:
+                return json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+    return {}
 
 
 def _workspace_inject_settings(cwd: Path) -> dict[str, Any]:
@@ -124,7 +260,6 @@ def _workspace_inject_settings(cwd: Path) -> dict[str, Any]:
     key = str(cwd.resolve())
     if key in workspaces:
         return dict(workspaces[key])
-    # Longest matching prefix
     best: dict[str, Any] = {}
     best_len = -1
     for path, settings in workspaces.items():
@@ -139,7 +274,6 @@ def _workspace_inject_settings(cwd: Path) -> dict[str, Any]:
 
 
 def _list_agent_ttys() -> list[dict[str, str]]:
-    """Return running cursor-agent / agent processes with their controlling TTYs."""
     try:
         out = subprocess.check_output(
             ["ps", "-eo", "pid=,tty=,args="],
@@ -161,9 +295,16 @@ def _list_agent_ttys() -> list[dict[str, str]]:
             continue
         if not _AGENT_CMD_RE.search(args):
             continue
-        if "deepiri-polylogue" in args or "polylogue" in args.split()[:3]:
+        # Skip polylogue itself
+        low = args.lower()
+        if "deepiri-polylogue" in low or "polylogue" in args.split()[:3]:
             continue
-        found.append({"pid": pid, "tty": tty, "args": args})
+        kind = "cursor"
+        if re.search(r"(?:^|/|\\)claude(?:\s|$)", args, re.I):
+            kind = "claude"
+        elif re.search(r"(?:^|/|\\)opencode(?:\s|$)", args, re.I):
+            kind = "opencode"
+        found.append({"pid": pid, "tty": tty, "args": args, "kind": kind})
     return found
 
 
@@ -185,20 +326,27 @@ def _write_tty(tty: str, text: str) -> dict[str, Any]:
     dev = _tty_device(tty)
     if not dev:
         raise FileNotFoundError(f"TTY not found: {tty}")
-    # Normalize newlines; end with Enter so the agent accepts the turn.
     body = text.replace("\r\n", "\n").rstrip("\n") + "\n"
     data = body.encode("utf-8", errors="replace")
-    # Prefer writing through the device node (appears as keyboard to the session).
     fd = os.open(str(dev), os.O_WRONLY)
     try:
         os.write(fd, data)
     finally:
         os.close(fd)
-    return {"runtime": "cursor", "method": "tty", "tty": str(dev), "bytes": len(data)}
+    return {"method": "tty", "tty": str(dev), "bytes": len(data)}
 
 
-def _resolve_tty(cwd: Path, settings: dict[str, Any]) -> str | None:
-    env_tty = os.environ.get("POLYLOGUE_CURSOR_TTY", "").strip()
+def _resolve_tty(
+    cwd: Path,
+    settings: dict[str, Any],
+    *,
+    preferred_runtime: str | None = None,
+) -> str | None:
+    env_tty = (
+        os.environ.get("POLYLOGUE_INJECT_TTY", "").strip()
+        or os.environ.get("POLYLOGUE_CURSOR_TTY", "").strip()
+        or os.environ.get("POLYLOGUE_CLAUDE_TTY", "").strip()
+    )
     if env_tty:
         return env_tty
     if settings.get("tty"):
@@ -206,126 +354,35 @@ def _resolve_tty(cwd: Path, settings: dict[str, Any]) -> str | None:
     agents = _list_agent_ttys()
     if not agents:
         return None
-    # Prefer an agent whose /proc cwd matches (when readable)
     cwd_s = str(cwd.resolve())
     matched: list[dict[str, str]] = []
     for row in agents:
+        if preferred_runtime and row.get("kind") and row["kind"] != preferred_runtime:
+            # Keep as secondary preference; don't exclude entirely if nothing else matches
+            pass
         try:
             proc_cwd = os.readlink(f"/proc/{row['pid']}/cwd")
         except OSError:
             proc_cwd = ""
         if proc_cwd and (proc_cwd == cwd_s or cwd_s.startswith(proc_cwd + "/") or proc_cwd.startswith(cwd_s)):
             matched.append(row)
-    if len(matched) == 1:
+    # Prefer matching runtime kind among cwd matches
+    if preferred_runtime and matched:
+        kind_hit = [r for r in matched if r.get("kind") == preferred_runtime]
+        if kind_hit:
+            return kind_hit[0]["tty"]
         return matched[0]["tty"]
-    if len(matched) > 1:
+    if matched:
         return matched[0]["tty"]
-    # Single local agent TTY → use it
+    if preferred_runtime:
+        kind_hit = [r for r in agents if r.get("kind") == preferred_runtime]
+        if len(kind_hit) == 1:
+            return kind_hit[0]["tty"]
+        if kind_hit:
+            return kind_hit[0]["tty"]
     if len(agents) == 1:
         return agents[0]["tty"]
     return None
-
-
-def _inject_cursor(prompt: str, cwd: Path, req: DelegateRequest | dict[str, Any]) -> dict[str, Any]:
-    settings = _workspace_inject_settings(cwd)
-    mode = (
-        os.environ.get("POLYLOGUE_CURSOR_INJECT", "").strip().lower()
-        or str(settings.get("mode", "auto")).lower()
-    )
-    attempts: list[dict[str, Any]] = []
-
-    # 1) TTY — same mechanics as user keyboard input in the agent terminal
-    if mode in ("auto", "tty", "all"):
-        tty = _resolve_tty(cwd, settings)
-        if tty:
-            try:
-                result = _write_tty(tty, prompt)
-                attempts.append(result)
-                # Also mirror to inbox for audit
-                if isinstance(req, DelegateRequest):
-                    inbox = append_inbox(req.target, {"type": "delegate_tty", "tty": tty, "delegate_id": req.delegate_id})
-                    result["inbox"] = str(inbox)
-                if mode != "all":
-                    return result
-            except OSError as exc:
-                attempts.append({"method": "tty", "error": str(exc), "tty": tty})
-                logger.warning("cursor TTY inject failed (%s): %s", tty, exc)
-
-    exe = shutil.which("agent") or shutil.which("cursor-agent")
-    chat_id = os.environ.get("POLYLOGUE_CURSOR_CHAT_ID", "").strip() or str(settings.get("chat_id") or "")
-    use_continue = (
-        os.environ.get("POLYLOGUE_CURSOR_CONTINUE", "").strip() in ("1", "true", "yes")
-        or bool(settings.get("continue"))
-    )
-
-    # 2) Resume / continue existing chat as a new user turn
-    if exe and mode in ("auto", "resume", "continue", "all"):
-        cmd: list[str] | None = None
-        if chat_id and mode != "continue":
-            cmd = [exe, "--resume", chat_id, "-p", "--force", prompt]
-        elif use_continue or mode == "continue":
-            cmd = [exe, "--continue", "-p", "--force", prompt]
-        if cmd:
-            logger.info("delegate inject cursor resume/continue: %s", cmd[0])
-            proc = subprocess.Popen(
-                cmd,
-                cwd=str(cwd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            result = {
-                "runtime": "cursor",
-                "method": "resume" if chat_id else "continue",
-                "pid": proc.pid,
-                "chat_id": chat_id or None,
-                "cmd": [cmd[0], *cmd[1:-1], "<prompt>"],
-            }
-            attempts.append(result)
-            if mode != "all":
-                return result
-
-    # 3) Fresh agent print turn in workspace
-    if exe and mode in ("auto", "spawn", "all"):
-        cmd = [exe, "-p", "--force", prompt]
-        logger.info("delegate inject cursor agent spawn: %s", exe)
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(cwd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        result = {
-            "runtime": "cursor",
-            "method": "spawn",
-            "pid": proc.pid,
-            "cmd": [exe, "-p", "--force", "<prompt>"],
-        }
-        attempts.append(result)
-        if mode != "all":
-            return result
-
-    # 4) Inbox fallback
-    inbox_result = _inject_inbox(prompt, req, runtime="cursor")
-    inbox_result["attempts"] = attempts
-    return inbox_result
-
-
-def _inject_claude(prompt: str, cwd: Path, req: DelegateRequest | dict[str, Any]) -> dict[str, Any]:
-    exe = shutil.which("claude")
-    if not exe:
-        return _inject_inbox(prompt, req, runtime="claude")
-    cmd = [exe, "-p", prompt]
-    logger.info("delegate inject claude: %s", exe)
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    return {"runtime": "claude", "pid": proc.pid, "cmd": [exe, "-p", "<prompt>"]}
 
 
 def _inject_inbox(

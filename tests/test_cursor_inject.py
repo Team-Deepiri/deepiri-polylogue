@@ -81,11 +81,43 @@ def test_workspace_tty_config(tmp_path, monkeypatch):
 
 
 def test_list_agent_ttys_parses_ps():
-    sample = " 123 pts/3 agent --resume\n 456 ? agent --help\n 789 pts/1 vim foo\n"
+    sample = (
+        " 123 pts/3 agent --resume\n"
+        " 456 ? agent --help\n"
+        " 789 pts/1 vim foo\n"
+        " 321 pts/5 claude --resume abc\n"
+        " 654 pts/7 opencode run hi\n"
+    )
     with patch(
         "deepiri_polylogue.bridge.runtimes.subprocess.check_output",
         return_value=sample,
     ):
         rows = _list_agent_ttys()
-    assert len(rows) == 1
-    assert rows[0]["tty"] == "pts/3"
+    assert {r["tty"] for r in rows} == {"pts/3", "pts/5", "pts/7"}
+    kinds = {r["tty"]: r["kind"] for r in rows}
+    assert kinds["pts/5"] == "claude"
+    assert kinds["pts/7"] == "opencode"
+
+
+def test_claude_cli_spawn(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("POLYLOGUE_BRIDGE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("POLYLOGUE_INJECT_MODE", "spawn")
+    init_delegate_identity(user="tester")
+    with (
+        patch("deepiri_polylogue.bridge.runtimes.shutil.which", side_effect=lambda n: "/bin/claude" if n == "claude" else None),
+        patch("deepiri_polylogue.bridge.runtimes.subprocess.Popen") as popen,
+    ):
+        popen.return_value.pid = 4242
+        req = build_delegate(
+            room="r",
+            sender="a",
+            target="b",
+            prompt="hi claude",
+            cwd=str(tmp_path),
+            sender_provider="claude",
+        )
+        result = inject_delegate(req, runtime="claude")
+    assert result["runtime"] == "claude"
+    assert result["method"] == "spawn"
+    assert popen.called
