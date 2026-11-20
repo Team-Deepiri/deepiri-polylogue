@@ -20,6 +20,26 @@ def state_paths(participant_id: str) -> tuple[Path, Path]:
     return base / f"polylogue-bridge-{safe}.log", base / f"polylogue-bridge-{safe}-outbox.jsonl"
 
 
+def listener_pid_path(participant_id: str) -> Path:
+    log_path, _ = state_paths(participant_id)
+    return log_path.with_name(log_path.name.replace(".log", "-listen.pid"))
+
+
+def listener_pid_alive(participant_id: str) -> bool:
+    path = listener_pid_path(participant_id)
+    if not path.is_file():
+        return False
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 def queue_message(participant_id: str, payload: dict) -> Path:
     _, outbox = state_paths(participant_id)
     outbox.parent.mkdir(parents=True, exist_ok=True)
@@ -80,24 +100,28 @@ async def _listen(
             data = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
         except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
             continue
-        # Skip our own echoes / non-chat frames
         msg_type = data.get("type")
-        if msg_type == "delegate":
-            continue  # handled by `delegate watch`
-        text = data.get("text") or data.get("prompt")
-        if not text or not str(text).strip():
-            continue
-        # Do not re-inject messages we ourselves sent
-        if data.get("from") and cwd is not None:
-            pass
         try:
+            if msg_type == "delegate":
+                # Same process can wake on signed delegates (no separate watch needed)
+                from .delegate import verify_delegate
+                from .runtimes import inject_delegate
+
+                if not verify_delegate(data):
+                    _log(log_path, f"inject skip invalid delegate sig id={data.get('delegate_id')}")
+                    continue
+                result = inject_delegate(data, runtime=inject_runtime)
+                _log(log_path, f"inject delegate: {json.dumps(result, ensure_ascii=False)}")
+                continue
+            text = data.get("text") or data.get("prompt")
+            if not text or not str(text).strip():
+                continue
             from .runtimes import inject_user_text
 
             result = inject_user_text(str(text), cwd=cwd, runtime=inject_runtime)
             _log(log_path, f"inject: {json.dumps(result, ensure_ascii=False)}")
         except Exception as exc:  # noqa: BLE001 — keep listener alive
             _log(log_path, f"inject failed: {exc}")
-
 
 async def _run_session(
     ctx: BridgeContext,
@@ -155,6 +179,11 @@ def listen_loop(
         f"peers={ctx.peers} inject={inject}",
     )
     target_url = url or bridge_url()
+    pid_path = listener_pid_path(ctx.participant_id)
+    try:
+        pid_path.write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
     async def _main() -> None:
         while True:
@@ -171,4 +200,11 @@ def listen_loop(
                 _log(log_path, f"disconnected: {exc} — reconnecting in 2s")
                 await asyncio.sleep(2)
 
-    asyncio.run(_main())
+    try:
+        asyncio.run(_main())
+    finally:
+        try:
+            if pid_path.is_file() and pid_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                pid_path.unlink()
+        except OSError:
+            pass
