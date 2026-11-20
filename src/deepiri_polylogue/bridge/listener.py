@@ -64,16 +64,67 @@ async def _outbox_reader(ws: websockets.WebSocketClientProtocol, outbox: Path, l
         offset = len(raw)
 
 
-async def _listen(ws: websockets.WebSocketClientProtocol, log_path: Path) -> None:
+async def _listen(
+    ws: websockets.WebSocketClientProtocol,
+    log_path: Path,
+    *,
+    inject: bool = False,
+    inject_runtime: str | None = None,
+    cwd: Path | None = None,
+) -> None:
     async for raw in ws:
         _log(log_path, f"recv: {raw}")
+        if not inject:
+            continue
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
+            continue
+        # Skip our own echoes / non-chat frames
+        msg_type = data.get("type")
+        if msg_type == "delegate":
+            continue  # handled by `delegate watch`
+        text = data.get("text") or data.get("prompt")
+        if not text or not str(text).strip():
+            continue
+        # Do not re-inject messages we ourselves sent
+        if data.get("from") and cwd is not None:
+            pass
+        try:
+            from .runtimes import inject_user_text
+
+            result = inject_user_text(str(text), cwd=cwd, runtime=inject_runtime)
+            _log(log_path, f"inject: {json.dumps(result, ensure_ascii=False)}")
+        except Exception as exc:  # noqa: BLE001 — keep listener alive
+            _log(log_path, f"inject failed: {exc}")
 
 
-async def _run_session(ctx: BridgeContext, url: str, log_path: Path, outbox: Path) -> None:
+async def _run_session(
+    ctx: BridgeContext,
+    url: str,
+    log_path: Path,
+    outbox: Path,
+    *,
+    inject: bool = False,
+    inject_runtime: str | None = None,
+) -> None:
     uri = f"{url.rstrip('/')}/ws?room={quote(ctx.room)}&id={quote(ctx.participant_id)}"
     async with websockets.connect(uri) as ws:
-        _log(log_path, f"connected room={ctx.room} id={ctx.participant_id}")
-        await asyncio.gather(_listen(ws, log_path), _outbox_reader(ws, outbox, log_path))
+        _log(
+            log_path,
+            f"connected room={ctx.room} id={ctx.participant_id}"
+            + (" inject=on" if inject else ""),
+        )
+        await asyncio.gather(
+            _listen(
+                ws,
+                log_path,
+                inject=inject,
+                inject_runtime=inject_runtime,
+                cwd=ctx.repo_root,
+            ),
+            _outbox_reader(ws, outbox, log_path),
+        )
 
 
 def listen_loop(
@@ -82,16 +133,40 @@ def listen_loop(
     participant_id: str | None = None,
     room: str | None = None,
     url: str | None = None,
+    inject: bool = False,
+    inject_runtime: str | None = None,
 ) -> None:
     ctx = resolve_bridge_context(cwd, participant_id=participant_id, room=room)
     log_path, outbox = state_paths(ctx.participant_id)
-    _log(log_path, f"resolved provider={ctx.provider} room={ctx.room} id={ctx.participant_id} peers={ctx.peers}")
+    # Env override: POLYLOGUE_BRIDGE_INJECT=1 makes listen behave like typed user input
+    env_inject = os.environ.get("POLYLOGUE_BRIDGE_INJECT", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "cursor",
+    )
+    if env_inject:
+        inject = True
+        if not inject_runtime and os.environ.get("POLYLOGUE_BRIDGE_INJECT", "").strip().lower() == "cursor":
+            inject_runtime = "cursor"
+    _log(
+        log_path,
+        f"resolved provider={ctx.provider} room={ctx.room} id={ctx.participant_id} "
+        f"peers={ctx.peers} inject={inject}",
+    )
     target_url = url or bridge_url()
 
     async def _main() -> None:
         while True:
             try:
-                await _run_session(ctx, target_url, log_path, outbox)
+                await _run_session(
+                    ctx,
+                    target_url,
+                    log_path,
+                    outbox,
+                    inject=inject,
+                    inject_runtime=inject_runtime,
+                )
             except (websockets.ConnectionClosed, OSError) as exc:
                 _log(log_path, f"disconnected: {exc} — reconnecting in 2s")
                 await asyncio.sleep(2)

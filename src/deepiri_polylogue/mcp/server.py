@@ -122,6 +122,48 @@ def create_server() -> MCPServer[Any]:
             return {"ok": False, "error": str(exc)}
 
     @mcp.tool()
+    def polylogue_delegate_submit(
+        text: str,
+        to: str | None = None,
+        cwd: str | None = None,
+        participant_id: str | None = None,
+        room: str | None = None,
+    ) -> dict[str, Any]:
+        """Sign and send a delegated task so the peer's `delegate watch` / inject listener
+        runs it as if the human typed the prompt into their agent terminal.
+
+        Prefer this when you need the other agent to wake and act (not just journal).
+        Peer must be running: `deepiri-polylogue bridge listen --inject` or `delegate watch`.
+        """
+        try:
+            return s.delegate_submit(
+                text,
+                to=to,
+                cwd=cwd,
+                participant_id=participant_id,
+                room=room,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
+    def polylogue_ping_peer(
+        text: str,
+        to: str | None = None,
+        cwd: str | None = None,
+        broadcast: bool = False,
+    ) -> dict[str, Any]:
+        """Live-ping a peer on the bridge AND journal the utterance.
+
+        With POLYLOGUE_BRIDGE_INJECT (default on for MCP listeners), the peer's terminal
+        receives the text as keyboard input — same mechanics as the user typing.
+        """
+        try:
+            return s.ping_peer(text, to=to, cwd=cwd, broadcast=broadcast)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    @mcp.tool()
     def polylogue_sync_pack(
         cwd: str | None = None,
         lines: int = 40,

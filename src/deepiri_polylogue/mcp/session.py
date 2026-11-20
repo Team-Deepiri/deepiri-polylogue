@@ -182,6 +182,13 @@ def start_listener(
     ]
     if room:
         cmd.extend(["--room", room])
+    # Default: inject inbound peer messages into Cursor/agent TTY as user input
+    inject_env = os.environ.get("POLYLOGUE_BRIDGE_INJECT", "1").strip().lower()
+    if inject_env not in ("0", "false", "no", "off"):
+        cmd.append("--inject")
+        runtime = os.environ.get("POLYLOGUE_DELEGATE_RUNTIME", "cursor").strip()
+        if runtime:
+            cmd.extend(["--inject-runtime", runtime])
 
     try:
         errf = open(log_path, "ab")  # noqa: SIM115 — handed to detached child
@@ -346,6 +353,77 @@ def bridge_send(
         "broadcast": broadcast or target is None,
         "text": text,
     }
+
+
+def delegate_submit(
+    text: str,
+    *,
+    to: str | None = None,
+    cwd: str | None = None,
+    participant_id: str | None = None,
+    room: str | None = None,
+) -> dict[str, Any]:
+    from ..bridge.client import send_delegate
+    from ..bridge.delegate import build_delegate, encode_delegate_wire
+
+    if not text.strip():
+        raise ValueError("text must be non-empty")
+    ensure_service()
+    work = resolve_cwd(cwd)
+    ctx = resolve_bridge_context(work, participant_id=participant_id, room=room)
+    target = resolve_send_target(ctx, explicit_to=to, broadcast=False)
+    if not target:
+        raise ValueError("Could not resolve delegate target — pass `to` or ensure one live peer")
+    req = build_delegate(
+        room=ctx.room,
+        sender=ctx.participant_id,
+        target=target,
+        prompt=text,
+        cwd=str(ctx.repo_root),
+        sender_provider=ctx.provider,
+    )
+    send_delegate(ctx.room, ctx.participant_id, req.to_wire())
+    return {
+        "ok": True,
+        "room": ctx.room,
+        "from": ctx.participant_id,
+        "to": target,
+        "delegate_id": req.delegate_id,
+        "wire": encode_delegate_wire(req),
+    }
+
+
+def ping_peer(
+    text: str,
+    *,
+    to: str | None = None,
+    cwd: str | None = None,
+    broadcast: bool = False,
+) -> dict[str, Any]:
+    """Bridge send + durable journal utterance (peer inject listener turns this into typed input)."""
+    work = resolve_cwd(cwd)
+    ctx = resolve_bridge_context(work)
+    sent = bridge_send(text, cwd=str(work), to=to, broadcast=broadcast)
+    root = ctx.session_root or polylogue_root(work)
+    try:
+        append_event(
+            root,
+            event_line(
+                type="utterance",
+                participant_id=ctx.participant_id,
+                role="assistant",
+                text=text,
+            ),
+        )
+        sent["journal"] = True
+    except Exception as exc:  # noqa: BLE001
+        sent["journal"] = False
+        sent["journal_error"] = str(exc)
+    sent["note"] = (
+        "Peer must run `bridge listen --inject` (MCP ensure does this by default) "
+        "for the message to appear as typed user input in their agent terminal."
+    )
+    return sent
 
 
 def bridge_inbox(
