@@ -109,7 +109,23 @@ def _inject_any(
     )
     attempts: list[dict[str, Any]] = []
 
-    # 1) TTY — works for Claude / Cursor / OpenCode interactive sessions alike
+    # Prefer configured chat/session resume BEFORE guessing a TTY — Composer/IDE
+    # agents have no PTY; wrong-TTY inject is silent from the peer's point of view.
+    has_session = bool(
+        settings.get("chat_id")
+        or settings.get("claude_session")
+        or settings.get("session_id")
+        or os.environ.get("POLYLOGUE_CURSOR_CHAT_ID")
+        or os.environ.get("POLYLOGUE_CLAUDE_SESSION")
+    )
+    if has_session and mode in ("auto", "resume", "all"):
+        cli = _cli_inject(prompt, cwd, settings, runtime=runtime, mode="resume")
+        if cli and cli.get("method") in ("resume", "continue", "spawn"):
+            attempts.append(cli)
+            if mode != "all":
+                return cli
+
+    # TTY — interactive Claude / Cursor / OpenCode terminal sessions
     if mode in ("auto", "tty", "all"):
         tty = _resolve_tty(cwd, settings, preferred_runtime=runtime)
         if tty:
@@ -129,14 +145,13 @@ def _inject_any(
                 attempts.append({"method": "tty", "error": str(exc), "tty": tty})
                 logger.warning("%s TTY inject failed (%s): %s", runtime, tty, exc)
 
-    # 2–3) Runtime-specific CLI resume / spawn
+    # Resume / continue / spawn when no session pin or TTY worked
     if mode in ("auto", "resume", "continue", "spawn", "all"):
         cli = _cli_inject(prompt, cwd, settings, runtime=runtime, mode=mode)
         if cli:
             attempts.append(cli)
             if mode != "all" and cli.get("method") != "none":
                 return cli
-
     inbox_result = _inject_inbox(prompt, req, runtime=runtime)
     inbox_result["attempts"] = attempts
     return inbox_result
